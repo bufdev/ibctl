@@ -41,7 +41,7 @@ Follow these exact steps in the IBKR portal to create a Flex Query and generate 
 
 1. On the same **Flex Queries** page, find the **Flex Web Service Configuration** section on the right side.
 2. Click the **gear icon** to configure.
-3. Generate a token and copy it securely. This token is used as the `IBKR_TOKEN` environment variable.
+3. Generate a token and copy it securely. This token is used as the `IBKR_FLEX_WEB_SERVICE_TOKEN` environment variable.
 4. The token is valid for the duration shown. Regenerate it when it expires.
 
 ## File Locations
@@ -49,15 +49,14 @@ Follow these exact steps in the IBKR portal to create a Flex Query and generate 
 | Path | Purpose | Override |
 |------|---------|----------|
 | `~/.config/ibctl/config.yaml` | Configuration file | `IBCTL_CONFIG_DIR` |
-| `~/.local/share/ibctl/v1/` | Downloaded data cache | `IBCTL_DATA_DIR` |
+| `<data_dir>/v1/` | Downloaded data cache | Set `data_dir` in config |
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `IBKR_TOKEN` | Yes (for `download`) | Your IBKR Flex Web Service token. This is read-only — it can only retrieve reports, not make trades or modify your account. Never store this in configuration files or commit it to version control. |
+| `IBKR_FLEX_WEB_SERVICE_TOKEN` | Yes (for `download`) | Your IBKR Flex Web Service token. This is read-only — it can only retrieve reports, not make trades or modify your account. Never store this in configuration files or commit it to version control. |
 | `IBCTL_CONFIG_DIR` | No | Override the configuration directory (default: `~/.config/ibctl`). |
-| `IBCTL_DATA_DIR` | No | Override the data directory (default: `~/.local/share/ibctl`). |
 
 ## Configuration
 
@@ -82,8 +81,13 @@ Opens the configuration file in `$EDITOR`. Creates the file with a documented te
 ```yaml
 # The configuration file version (required, must be v1).
 version: v1
+# The data directory for ibctl to store downloaded and computed data (required).
+data_dir: ~/Documents/ibctl
 # The Flex Query ID (required, visible next to your query in IBKR portal).
-query_id: "123456"
+flex_query_id: "123456"
+# Directory containing IBKR Activity Statement CSVs (required).
+# Organize by account subdirectory. See "Seeding Historical Data" below.
+activity_statements_dir: ~/Documents/ibkr-statements
 # Optional symbol classifications for holdings output.
 symbols:
   - name: AAPL
@@ -106,7 +110,7 @@ ibctl config validate
 
 ```bash
 # Set the IBKR token.
-export IBKR_TOKEN="your-flex-web-service-token"
+export IBKR_FLEX_WEB_SERVICE_TOKEN="your-flex-web-service-token"
 
 # View holdings overview (downloads data automatically if not cached).
 ibctl holdings overview
@@ -128,6 +132,58 @@ Data is downloaded automatically when commands need it. Use `ibctl download` to 
 | `ibctl config validate` | Validate the configuration file |
 | `ibctl download` | Force re-download and cache IBKR data via Flex Query API |
 | `ibctl holdings overview` | Display holdings with prices, positions, and classifications |
+
+## Seeding Historical Data
+
+IBKR limits all data access (API and portal) to 365 days per request. To get your full trade history, download Activity Statement CSVs from the IBKR portal and point ibctl at them. ibctl reads these files directly at command time and merges them with data from the Flex Query API.
+
+### Setup
+
+1. Create a directory for your Activity Statements:
+   ```bash
+   mkdir -p ~/Documents/ibkr-statements
+   ```
+
+2. Create a subdirectory for each IBKR account:
+   ```bash
+   mkdir ~/Documents/ibkr-statements/RRSP
+   mkdir ~/Documents/ibkr-statements/HoldCo
+   mkdir ~/Documents/ibkr-statements/Individual
+   ```
+
+3. For each account, log in to [IBKR Account Management](https://www.interactivebrokers.com/portal).
+
+4. Go to **Performance & Reports** > **Statements**.
+
+5. Select **Activity Statement**, **Custom Date Range**, and click **Download CSV**.
+
+6. Download yearly chunks (365-day maximum per file). For an account opened April 2021:
+   - 2021-04-01 to 2022-03-31
+   - 2022-04-01 to 2023-03-31
+   - 2023-04-01 to 2024-03-31
+   - 2024-04-01 to 2025-03-31
+   - 2025-03-01 to 2026-02-28
+
+7. Save each CSV in the account's subdirectory. Filenames don't matter — ibctl reads all `*.csv` files recursively.
+
+8. Add the directory to your config:
+   ```bash
+   ibctl config edit
+   ```
+   Set `activity_statements_dir: ~/Documents/ibkr-statements`.
+
+9. Run `ibctl holdings overview` — data from the CSVs is merged with any Flex Query API data.
+
+### How It Works
+
+The Activity Statement CSVs are **seed data** that you manage. ibctl never modifies them. At command time, ibctl:
+
+1. Reads all CSVs from the configured directory (trades, positions, dividends, interest, instrument info)
+2. Reads any cached Flex Query data (from `ibctl download`)
+3. Merges and deduplicates — Flex Query data takes precedence for overlapping trades
+4. Computes tax lots, positions, and holdings from the merged data
+
+To keep data current, the Flex Query API provides the latest 365 days. To add older history, download more CSVs.
 
 ## Data Storage
 

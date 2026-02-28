@@ -13,6 +13,7 @@ import (
 
 	"buf.build/go/app/appcmd"
 	"buf.build/go/app/appext"
+	"github.com/bufdev/ibctl/cmd/ibctl/internal/ibctlcmd"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
 	"github.com/bufdev/ibctl/internal/pkg/ibkrflexquery"
 	"github.com/bufdev/ibctl/internal/standard/xtime"
@@ -24,8 +25,6 @@ const (
 	fromFlagName = "from"
 	// toFlagName is the flag name for the end date.
 	toFlagName = "to"
-	// ibkrTokenEnvVar is the environment variable name for the IBKR token.
-	ibkrTokenEnvVar = "IBKR_TOKEN"
 )
 
 // NewCommand returns a new probe command for testing API connectivity and date ranges.
@@ -52,6 +51,8 @@ With --from/--to (YYYYMMDD format), overrides the period to test specific date r
 }
 
 type flags struct {
+	// Config is the path to the configuration file.
+	Config string
 	// From is the start date (YYYYMMDD).
 	From string
 	// To is the end date (YYYYMMDD).
@@ -64,18 +65,9 @@ func newFlags() *flags {
 
 // Bind registers the flag definitions with the given flag set.
 func (f *flags) Bind(flagSet *pflag.FlagSet) {
-	flagSet.StringVar(
-		&f.From,
-		fromFlagName,
-		"",
-		"Start date (YYYYMMDD, required)",
-	)
-	flagSet.StringVar(
-		&f.To,
-		toFlagName,
-		"",
-		"End date (YYYYMMDD, required)",
-	)
+	flagSet.StringVar(&f.Config, ibctlcmd.ConfigFlagName, ibctlconfig.DefaultConfigFileName, "The configuration file path")
+	flagSet.StringVar(&f.From, fromFlagName, "", "Start date (YYYYMMDD)")
+	flagSet.StringVar(&f.To, toFlagName, "", "End date (YYYYMMDD)")
 }
 
 func run(ctx context.Context, container appext.Container, flags *flags) error {
@@ -97,20 +89,21 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 		}
 	}
 	// Read config for the query ID.
-	config, err := ibctlconfig.ReadConfig(container.ConfigDirPath())
+	config, err := ibctlconfig.ReadConfig(flags.Config)
 	if err != nil {
 		return err
 	}
 	// Read the IBKR token from the environment.
-	ibkrToken := container.Env(ibkrTokenEnvVar)
+	const ibkrFlexWebServiceTokenEnvVar = "IBKR_FLEX_WEB_SERVICE_TOKEN"
+	ibkrToken := container.Env(ibkrFlexWebServiceTokenEnvVar)
 	if ibkrToken == "" {
-		return errors.New("IBKR_TOKEN environment variable is required, set it to your IBKR Flex Web Service token (see \"ibctl --help\" for details)")
+		return errors.New(ibkrFlexWebServiceTokenEnvVar + " environment variable is required, set it to your IBKR Flex Web Service token (see \"ibctl --help\" for details)")
 	}
 	// Make a single API call with the specified date range.
 	logger := container.Logger()
 	client := ibkrflexquery.NewClient(logger)
-	logger.Info("probing API", "from", fromDate.String(), "to", toDate.String(), "query_id", config.IBKRQueryID)
-	statement, err := client.Download(ctx, ibkrToken, config.IBKRQueryID, fromDate, toDate)
+	logger.Info("probing API", "from", fromDate.String(), "to", toDate.String(), "query_id", config.IBKRFlexQueryID)
+	statement, err := client.Download(ctx, ibkrToken, config.IBKRFlexQueryID, fromDate, toDate)
 	if err != nil {
 		return fmt.Errorf("probe failed: %w", err)
 	}

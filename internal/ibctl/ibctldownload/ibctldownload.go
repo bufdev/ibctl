@@ -91,7 +91,7 @@ func (d *downloader) Download(ctx context.Context) error {
 	d.logger.Info("downloading flex query data")
 	// Fetch data using the query's configured period (single API call).
 	var zeroDate xtime.Date
-	statement, err := d.flexQueryClient.Download(ctx, d.ibkrToken, d.config.IBKRQueryID, zeroDate, zeroDate)
+	statement, err := d.flexQueryClient.Download(ctx, d.ibkrToken, d.config.IBKRFlexQueryID, zeroDate, zeroDate)
 	if err != nil {
 		return fmt.Errorf("downloading flex query: %w", err)
 	}

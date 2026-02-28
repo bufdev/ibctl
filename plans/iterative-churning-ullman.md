@@ -1,84 +1,171 @@
-# Download Rework: Windowed API Calls + Implicit Download
+# Activity Statements as Seed Data + Flex Query Supplements
 
 ## Context
 
-IBKR's Flex Query API limits each request to 365 calendar days. To capture full account history, ibctl needs to make multiple API calls with sliding date windows and merge the results. Additionally, `ibctl download` should be a pre-caching mechanism — other commands like `holdings overview` should implicitly trigger a download when data is missing.
+IBKR limits all data access to 365-day windows. The user has 3 accounts with history going back to April 2021 (~5 years). Rather than importing CSVs into ibctl's cache as a one-time operation, the Activity Statement CSVs become a **persistent, user-managed seed data directory** that ibctl reads directly at command time. The Flex Query API supplements with the latest data beyond what's in the CSVs.
 
-The API supports `fd` (from date) and `td` (to date) query parameters on the SendRequest endpoint to override the configured period.
+Config points at the directory: `activity_statements_dir: ~/Documents/ibkr-statements`. User organizes it by account subdirectories. ibctl reads all `*.csv` files across all subdirectories, deduplicates, and merges with Flex Query data at command time.
 
-## Changes
+## Config Change
 
-### 1. ibkrflexquery: Add date parameters to Download
+Add `activity_statements_dir` to config:
 
-**File**: `internal/pkg/ibkrflexquery/ibkrflexquery.go`
-
-Add `fromDate` and `toDate` string params (format `YYYYMMDD`) to the `Download` method. Empty strings mean "use the query's configured period."
-
-```go
-// Client interface change.
-Download(ctx context.Context, token string, queryID string, fromDate string, toDate string) (*FlexStatement, error)
+```yaml
+version: v1
+query_id: "1419229"
+# Directory containing IBKR Activity Statement CSVs, organized by account subdirectory.
+activity_statements_dir: ~/Documents/ibkr-statements
 ```
 
-In `sendRequest`, conditionally append `&fd=...&td=...` to the URL when both are non-empty.
+The directory structure:
+```
+~/Documents/ibkr-statements/
+├── account-1/
+│   ├── 2021-04-01_2022-03-31.csv
+│   ├── 2022-04-01_2023-03-31.csv
+│   ├── 2023-04-01_2024-03-31.csv
+│   └── 2024-04-01_2025-02-28.csv
+├── account-2/
+│   └── ...
+└── account-3/
+    └── ...
+```
 
-Validate: token and queryID required (already done). fromDate/toDate: if one is set, both must be set.
+Filenames don't matter — ibctl reads all `*.csv` recursively.
 
-### 2. ibctldownload: Windowed multi-call download with merge
+## CSV Sections to Parse
 
-**File**: `internal/ibctl/ibctldownload/ibctldownload.go`
+From the sample CSV, parse these sections (skip Account Information entirely — contains identifying info):
 
-Replace the single `flexQueryClient.Download()` call with a loop:
+| Section | Row filter | Key fields | Use |
+|---------|-----------|------------|-----|
+| **Trades** (Stocks) | `Trades,Data,Order` where Asset Category = `Stocks` | Symbol, Date/Time, Quantity, T. Price, Currency, Proceeds, Comm/Fee, Realized P/L, Code | Trade history, FIFO tax lots |
+| **Trades** (Forex) | `Trades,Data,Order` where Asset Category = `Forex` | Symbol, Date/Time, Quantity, T. Price, Currency | FX conversions |
+| **Open Positions** | `Open Positions,Data,Summary` | Symbol, Currency, Quantity, Cost Price, Cost Basis, Close Price, Value, Unrealized P/L | Current positions snapshot |
+| **Dividends** | `Dividends,Data` (not Total) | Currency, Date, Description, Amount | Dividend income |
+| **Withholding Tax** | `Withholding Tax,Data` (not Total) | Currency, Date, Description, Amount, Code | Tax withheld on dividends |
+| **Interest** | `Interest,Data` (not Total) | Currency, Date, Description, Amount | Interest income/expense |
+| **Financial Instrument Information** (Stocks) | `Financial Instrument Information,Data,Stocks` | Symbol, Description, Conid, Security ID, Listing Exch, Type (COMMON/ETF/ADR) | Symbol metadata — replaces manual config classification |
+| **Financial Instrument Information** (Bonds) | Second header variant with Issuer, Maturity | Symbol, Description, Conid, Security ID, Issuer, Maturity, Type (Corp) | Bond metadata |
 
-**Window strategy**: Start from today, go backwards in 365-day chunks.
-- Window 0: `today - 364` to `today`
-- Window 1: `today - 729` to `today - 365`
-- Window 2: `today - 1094` to `today - 730`
-- etc.
+**Sections to skip:** Statement, Account Information, Net Asset Value, Change in NAV, Mark-to-Market Performance Summary, Realized & Unrealized Performance Summary, Cash Report, Forex Balances, Transaction Fees, Fees, Interest Accruals, Change in Dividend Accruals, Codes, Notes/Legal Notes.
 
-**Termination**: Stop when a window returns zero trades. This means we've gone past the beginning of the account. Simple and reliable — the only edge case is a >365-day gap in trading, which is extremely unlikely for an active account.
+## CSV Parsing Notes
 
-**Merge logic**:
-- **Trades**: Accumulate across all windows. Deduplicate by `TradeID`. This is the core data that needs full history.
-- **Positions**: Take from the most recent window only (window 0). Positions are a point-in-time snapshot of current holdings.
-- **Cash transactions**: Accumulate across all windows for FX rate extraction. Deduplicate by date+currency.
+- Multi-section format: first column is section name, second is row type (`Header`, `Data`, `SubTotal`, `Total`)
+- Can't use standard `csv.Reader` naively — varying column counts per section
+- Quantities may have commas in quotes (e.g., `"-2,290"`)
+- Negative quantity = sell, positive = buy
+- Date/Time format: `"2026-01-02, 09:30:00"`
+- No trade ID — generate deterministic key from `Symbol + DateTime + Quantity + Price`
+- Forex trades header differs from stock trades header (different columns)
+- Financial Instrument Information has two header variants (Stocks vs Bonds)
 
-After merging, the rest of the pipeline continues as before: convert to protos, compute tax lots, verify positions, write files.
+## Architecture
 
-### 3. Implicit download in commands that need data
+```
+Command (e.g., holdings overview)
+  │
+  ├─ Read Activity Statement CSVs (seed data, user-managed)
+  │   └─ ibkractivitycsv.ParseDirectory(dir) → parsed sections
+  │
+  ├─ Read Flex Query cache (supplement, ibctl-managed)
+  │   └─ protoio.ReadMessagesJSON(trades.json) → cached trades
+  │
+  ├─ Merge: CSV trades + cached trades, dedup by composite key
+  │
+  └─ Compute: tax lots, positions, holdings overview
+```
 
-**Files**: `cmd/ibctl/internal/command/holdings/holdingsoverview/holdingsoverview.go`, `cmd/ibctl/internal/command/download/download.go`
+The merge happens at **read time**, not write time. The CSVs are never modified. The Flex Query cache is the only thing ibctl writes to.
 
-Add `Downloader.EnsureDownloaded(ctx) error` to the interface — checks if required data files exist and downloads if they don't.
+## New Packages
 
-The holdings overview command constructs a Downloader (same wiring as download command — needs IBKR_TOKEN, config, logger, clients) and calls `EnsureDownloaded` before reading data.
+### `internal/pkg/ibkractivitycsv/ibkractivitycsv.go`
 
-Extract the download wiring (reading config, getting token, constructing clients, creating downloader) into a shared helper to avoid duplication between the download and holdings commands. Place it in a shared command-layer helper file or inline it — keep it at the `cmd/` layer since it touches `appext.Container`.
+Provider-specific CSV parser. Parses IBKR Activity Statement CSV files.
 
-`ibctl download` calls `Download()` directly (always re-downloads). `ibctl holdings overview` calls `EnsureDownloaded()` (downloads only if files are missing).
+**Exported types** (plain Go structs, not protos — this is a parsing package):
+- `ActivityStatement` — all parsed sections from one file
+- `Trade` — Symbol, DateTime, AssetCategory, CurrencyCode, Quantity, TradePrice, Proceeds, Commission, RealizedPL, Code
+- `ForexTrade` — Symbol, DateTime, CurrencyCode, Quantity, TradePrice, Proceeds, Commission
+- `Position` — Symbol, AssetCategory, CurrencyCode, Quantity, CostPrice, CostBasis, ClosePrice, Value, UnrealizedPL
+- `Dividend` — CurrencyCode, Date, Description, Amount
+- `WithholdingTax` — CurrencyCode, Date, Description, Amount, Code
+- `Interest` — CurrencyCode, Date, Description, Amount
+- `InstrumentInfo` — Symbol, Description, Conid, SecurityID, ListingExchange, InstrumentType, AssetCategory, Issuer, Maturity
 
-### 4. README update
+**Exported functions:**
+- `ParseFile(filePath string) (*ActivityStatement, error)`
+- `ParseDirectory(dirPath string) ([]*ActivityStatement, error)` — reads all `*.csv` recursively
 
-**File**: `README.md`
+### `internal/ibctl/ibctlmerge/ibctlmerge.go`
 
-- Remove the note about running `ibctl download` multiple times — ibctl handles windowing automatically
-- Clarify that `ibctl download` pre-caches data, and other commands trigger download implicitly when needed
-- Keep the IBKR setup instructions: user creates ONE query with 365-day period, ibctl handles the rest
+Merges data from Activity Statement CSVs and Flex Query cache into a unified view. Used by commands at read time.
 
-### 5. Files to check for data existence
+**Exported functions:**
+- `MergedData` struct containing all merged trades, positions, dividends, etc.
+- `Merge(csvStatements []*ibkractivitycsv.ActivityStatement, flexCachePath string) (*MergedData, error)`
 
-The minimum files needed for holdings overview: `trades.json` and `positions.json` in the v1 data directory. If either is missing, trigger download.
+This converts CSV structs → protos, merges with cached protos, deduplicates.
+
+## Changes to Existing Code
+
+### `internal/ibctl/ibctlconfig/ibctlconfig.go`
+
+- Add `ActivityStatementsDir string` to `ExternalConfig` (`yaml:"activity_statements_dir"`)
+- Add `ActivityStatementsDirPath string` to `Config` (resolved via `xos.ExpandHome`)
+- Not required — if empty, only Flex Query data is used
+
+### `cmd/ibctl/main.go`
+
+- No new command needed — the CSVs are read implicitly by existing commands
+
+### `cmd/ibctl/internal/command/holdings/holdingsoverview/holdingsoverview.go`
+
+- Read Activity Statement CSVs via `ibkractivitycsv.ParseDirectory(config.ActivityStatementsDirPath)`
+- Merge with Flex Query cache via `ibctlmerge`
+- Compute holdings from merged data
+
+### `README.md`
+
+Add "Seeding Historical Data" section with exact instructions:
+
+1. Create a directory for Activity Statements (e.g., `~/Documents/ibkr-statements`)
+2. Create a subdirectory for each IBKR account (e.g., `my-account/`)
+3. For each account, log in to IBKR Account Management
+4. Go to Performance & Reports > Statements
+5. Select Activity Statement, Custom Date Range, CSV format
+6. Download yearly chunks (365-day max per file):
+   - 2021-04-01 to 2022-03-31
+   - 2022-04-01 to 2023-03-31
+   - 2023-04-01 to 2024-03-31
+   - 2024-04-01 to 2025-02-28
+7. Save each CSV in the account's subdirectory
+8. Add `activity_statements_dir: ~/Documents/ibkr-statements` to config
+9. Run `ibctl holdings overview` — data from CSVs + Flex Query API are merged
 
 ## File Manifest
 
-**Modify**:
-- `internal/pkg/ibkrflexquery/ibkrflexquery.go` — Add fromDate/toDate to Download signature and URL construction
-- `internal/ibctl/ibctldownload/ibctldownload.go` — Windowed loop, merge/dedup, EnsureDownloaded
-- `cmd/ibctl/internal/command/download/download.go` — Pass empty dates (or update call), extract shared wiring
-- `cmd/ibctl/internal/command/holdings/holdingsoverview/holdingsoverview.go` — Construct downloader, call EnsureDownloaded before reading
-- `README.md` — Update download docs
+**Create:**
+- `internal/pkg/ibkractivitycsv/ibkractivitycsv.go` — Activity Statement CSV parser
+- `internal/ibctl/ibctlmerge/ibctlmerge.go` — Merge CSV + Flex Query data
+
+**Modify:**
+- `internal/ibctl/ibctlconfig/ibctlconfig.go` — Add `activity_statements_dir` field
+- `cmd/ibctl/internal/command/holdings/holdingsoverview/holdingsoverview.go` — Read and merge CSVs
+- `README.md` — Seeding instructions
+
+**Unchanged:**
+- `internal/ibctl/ibctldownload/` — Flex Query download stays as-is
+- `internal/pkg/ibkrflexquery/` — Flex Query API client stays as-is
+- `cmd/ibctl/internal/command/download/` — Download command stays as-is
 
 ## Verification
 
-1. `make generate && make all` — 0 issues, all tests pass
-2. `ibctl --help` — shows updated command descriptions
-3. Code review: windowing terminates when zero trades returned, trades deduped by ID, positions from latest window only
+1. `make generate && make all` — 0 issues
+2. Place sample.csv in `~/Documents/ibkr-statements/test-account/`
+3. Add `activity_statements_dir: ~/Documents/ibkr-statements` to config
+4. `ibctl holdings overview` — shows data from the CSV
+5. `ibctl download` — downloads latest via API
+6. `ibctl holdings overview` — shows merged CSV + API data

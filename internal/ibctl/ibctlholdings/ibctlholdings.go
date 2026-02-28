@@ -6,8 +6,6 @@
 package ibctlholdings
 
 import (
-	"fmt"
-	"path/filepath"
 	"sort"
 	"strconv"
 
@@ -15,7 +13,6 @@ import (
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctltaxlot"
 	"github.com/bufdev/ibctl/internal/pkg/moneypb"
-	"github.com/bufdev/ibctl/internal/pkg/protoio"
 )
 
 // HoldingOverview represents a single holding for display.
@@ -54,23 +51,15 @@ func HoldingOverviewToRow(h *HoldingOverview) []string {
 	}
 }
 
-// GetHoldingsOverview reads cached data and computes the holdings overview.
-// The dataDirV1Path is the versioned data directory (e.g., ~/.local/share/ibctl/v1).
-func GetHoldingsOverview(dataDirV1Path string, config *ibctlconfig.Config) ([]*HoldingOverview, error) {
-	// Read tax lots from cache (newline-separated proto JSON).
-	taxLotsPath := filepath.Join(dataDirV1Path, "tax_lots.json")
-	taxLots, err := protoio.ReadMessagesJSON(taxLotsPath, func() *datav1.TaxLot { return &datav1.TaxLot{} })
+// GetHoldingsOverview computes the holdings overview from merged trade and position data.
+// Trades are used to compute FIFO tax lots and average cost basis.
+// Positions provide the latest market prices.
+func GetHoldingsOverview(trades []*datav1.Trade, positions []*datav1.Position, config *ibctlconfig.Config) ([]*HoldingOverview, error) {
+	// Compute tax lots from merged trades.
+	taxLots, err := ibctltaxlot.ComputeTaxLots(trades)
 	if err != nil {
-		return nil, fmt.Errorf("reading tax lots: %w", err)
+		return nil, err
 	}
-
-	// Read positions from cache (newline-separated proto JSON, for market prices).
-	positionsPath := filepath.Join(dataDirV1Path, "positions.json")
-	positions, err := protoio.ReadMessagesJSON(positionsPath, func() *datav1.Position { return &datav1.Position{} })
-	if err != nil {
-		return nil, fmt.Errorf("reading positions: %w", err)
-	}
-
 	// Compute positions from tax lots (for average cost basis).
 	computedPositions := ibctltaxlot.ComputePositions(taxLots)
 

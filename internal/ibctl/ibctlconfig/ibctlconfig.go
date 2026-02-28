@@ -3,9 +3,6 @@
 // All rights reserved.
 
 // Package ibctlconfig provides configuration parsing and validation for ibctl.
-//
-// Configuration is stored at ~/.config/ibctl/config.yaml (or $IBCTL_CONFIG_DIR/config.yaml).
-// Downloaded data is stored at ~/.local/share/ibctl/v1 (or $IBCTL_DATA_DIR/v1).
 package ibctlconfig
 
 import (
@@ -15,11 +12,12 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/bufdev/ibctl/internal/standard/xos"
 	"gopkg.in/yaml.v3"
 )
 
-// ConfigFileName is the name of the configuration file within the config directory.
-const ConfigFileName = "config.yaml"
+// DefaultConfigFileName is the default configuration file name in the current directory.
+const DefaultConfigFileName = "ibctl.yaml"
 
 // configTemplate is the default configuration file template with comments.
 // yaml.v3 does not preserve comments, so we hardcode the template string.
@@ -27,14 +25,23 @@ const configTemplate = `# The configuration file version.
 #
 # Required. The only current valid version is v1.
 version: v1
+# The data directory for ibctl to store downloaded and computed data.
+#
+# Required. A v1/ subdirectory will be created within this directory.
+data_dir: ~/Documents/ibctl
 # The Flex Query ID (visible next to your query name in the IBKR portal).
 #
 # Required. Create a Flex Query at https://www.interactivebrokers.com
 # under Performance & Reports > Flex Queries. Include the Trades,
 # Open Positions, and Cash Transactions sections with all fields enabled.
 #
-# The Flex Web Service token must be set via the IBKR_TOKEN environment variable.
-query_id: ""
+# The Flex Web Service token must be set via the IBKR_FLEX_WEB_SERVICE_TOKEN environment variable.
+flex_query_id: ""
+# Directory containing IBKR Activity Statement CSVs for historical data.
+#
+# Required. Organize by account subdirectory (e.g., ~/Documents/ibkr-statements/my-account/).
+# ibctl reads all *.csv files recursively. See README for setup instructions.
+activity_statements_dir: ~/Documents/ibkr-statements
 # Symbol classification configuration.
 #
 # Optional. Adds category, type, and sector metadata to holdings output.
@@ -45,18 +52,22 @@ query_id: ""
 #     sector: TECH
 `
 
-// ExternalConfig is the YAML-serializable configuration file structure.
-type ExternalConfig struct {
+// ExternalConfigV1 is the YAML-serializable configuration file structure for version v1.
+type ExternalConfigV1 struct {
 	// Version is the configuration file version (must be "v1").
 	Version string `yaml:"version"`
-	// QueryID is the Flex Query ID.
-	QueryID string `yaml:"query_id"`
+	// DataDir is the data directory for ibctl to store downloaded and computed data.
+	DataDir string `yaml:"data_dir"`
+	// FlexQueryID is the Flex Query ID.
+	FlexQueryID string `yaml:"flex_query_id"`
+	// ActivityStatementsDir is the directory containing IBKR Activity Statement CSVs.
+	ActivityStatementsDir string `yaml:"activity_statements_dir"`
 	// Symbols is the optional list of symbol classifications.
-	Symbols []ExternalSymbolConfig `yaml:"symbols"`
+	Symbols []ExternalSymbolConfigV1 `yaml:"symbols"`
 }
 
-// ExternalSymbolConfig holds classification metadata for a symbol.
-type ExternalSymbolConfig struct {
+// ExternalSymbolConfigV1 holds classification metadata for a symbol in v1 config.
+type ExternalSymbolConfigV1 struct {
 	// Name is the ticker symbol.
 	Name string `yaml:"name"`
 	// Category is the asset category (e.g., "EQUITY").
@@ -69,13 +80,18 @@ type ExternalSymbolConfig struct {
 
 // Config is the validated runtime configuration derived from the config file.
 type Config struct {
-	// IBKRQueryID is the Flex Query ID.
+	// DataDirV1Path is the resolved versioned data directory path (data_dir/v1).
+	DataDirV1Path string
+	// IBKRFlexQueryID is the Flex Query ID.
 	//
 	// To create a Flex Query, log in to IBKR Client Portal, navigate to
 	// Performance & Reports > Flex Queries, and create a new query with
 	// Trades, Open Positions, and Cash Transactions sections enabled.
 	// The Query ID is displayed next to the query name in the list.
-	IBKRQueryID string
+	IBKRFlexQueryID string
+	// ActivityStatementsDirPath is the resolved path to the Activity Statements directory.
+	// Empty if not configured.
+	ActivityStatementsDirPath string
 	// SymbolConfigs maps ticker symbols to their classification metadata.
 	SymbolConfigs map[string]SymbolConfig
 }
@@ -90,13 +106,30 @@ type SymbolConfig struct {
 	Sector string
 }
 
-// NewConfig validates an ExternalConfig and returns a runtime Config.
-func NewConfig(externalConfig ExternalConfig) (*Config, error) {
+// NewConfigV1 validates an ExternalConfigV1 and returns a runtime Config.
+func NewConfigV1(externalConfig ExternalConfigV1) (*Config, error) {
 	if externalConfig.Version != "v1" {
 		return nil, fmt.Errorf("unsupported config version %q, must be v1", externalConfig.Version)
 	}
-	if externalConfig.QueryID == "" {
-		return nil, errors.New("query_id is required")
+	if externalConfig.DataDir == "" {
+		return nil, errors.New("data_dir is required")
+	}
+	if externalConfig.FlexQueryID == "" {
+		return nil, errors.New("flex_query_id is required")
+	}
+	if externalConfig.ActivityStatementsDir == "" {
+		return nil, errors.New("activity_statements_dir is required")
+	}
+	// Resolve the data directory path and compute the v1 subdirectory.
+	dataDirPath, err := xos.ExpandHome(externalConfig.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	dataDirV1Path := filepath.Join(dataDirPath, "v1")
+	// Resolve the activity statements directory path.
+	activityStatementsDirPath, err := xos.ExpandHome(externalConfig.ActivityStatementsDir)
+	if err != nil {
+		return nil, err
 	}
 	// Build symbol configs map, checking for duplicates.
 	symbolConfigs := make(map[string]SymbolConfig, len(externalConfig.Symbols))
@@ -114,25 +147,16 @@ func NewConfig(externalConfig ExternalConfig) (*Config, error) {
 		}
 	}
 	return &Config{
-		IBKRQueryID:   externalConfig.QueryID,
-		SymbolConfigs: symbolConfigs,
+		DataDirV1Path:             dataDirV1Path,
+		IBKRFlexQueryID:           externalConfig.FlexQueryID,
+		ActivityStatementsDirPath: activityStatementsDirPath,
+		SymbolConfigs:             symbolConfigs,
 	}, nil
 }
 
-// ConfigFilePath returns the path to the configuration file within the given config directory.
-func ConfigFilePath(configDirPath string) string {
-	return filepath.Join(configDirPath, ConfigFileName)
-}
-
-// DataDirV1Path returns the versioned data directory path within the given data directory.
-func DataDirV1Path(dataDirPath string) string {
-	return filepath.Join(dataDirPath, "v1")
-}
-
-// ReadConfig reads and validates the configuration file from the given config directory.
+// ReadConfig reads and validates a configuration file at the given path.
 // Returns a clear error message directing users to run "ibctl config init" if the file is missing.
-func ReadConfig(configDirPath string) (*Config, error) {
-	filePath := ConfigFilePath(configDirPath)
+func ReadConfig(filePath string) (*Config, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -140,38 +164,35 @@ func ReadConfig(configDirPath string) (*Config, error) {
 		}
 		return nil, fmt.Errorf("reading config file: %w", err)
 	}
-	var externalConfig ExternalConfig
+	var externalConfig ExternalConfigV1
 	if err := unmarshalYAMLStrict(data, &externalConfig); err != nil {
 		return nil, fmt.Errorf("parsing config file %s: %w", filePath, err)
 	}
-	config, err := NewConfig(externalConfig)
+	config, err := NewConfigV1(externalConfig)
 	if err != nil {
 		return nil, fmt.Errorf("invalid configuration in %s: %w", filePath, err)
 	}
 	return config, nil
 }
 
-// InitConfig creates a new configuration file with a documented template.
-// Creates the config directory if it does not exist.
-// Returns the path to the created file, or an error if the file already exists.
-func InitConfig(configDirPath string) (string, error) {
-	filePath := ConfigFilePath(configDirPath)
+// InitConfig creates a new configuration file with a documented template at the given path.
+// Returns an error if the file already exists.
+func InitConfig(filePath string) error {
 	if _, err := os.Stat(filePath); err == nil {
-		return "", fmt.Errorf("configuration file already exists: %s", filePath)
+		return fmt.Errorf("configuration file already exists: %s", filePath)
 	}
-	// Create the config directory if it does not exist.
-	if err := os.MkdirAll(configDirPath, 0o755); err != nil {
-		return "", fmt.Errorf("creating config directory: %w", err)
+	// Create parent directories if they don't exist.
+	if dir := filepath.Dir(filePath); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("creating directory: %w", err)
+		}
 	}
-	if err := os.WriteFile(filePath, []byte(configTemplate), 0o644); err != nil {
-		return "", err
-	}
-	return filePath, nil
+	return os.WriteFile(filePath, []byte(configTemplate), 0o644)
 }
 
-// ValidateConfig reads and validates the configuration file from the given config directory.
-func ValidateConfig(configDirPath string) error {
-	_, err := ReadConfig(configDirPath)
+// ValidateConfig reads and validates a configuration file at the given path.
+func ValidateConfig(filePath string) error {
+	_, err := ReadConfig(filePath)
 	return err
 }
 

@@ -14,7 +14,9 @@ import (
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/ibctlcmd"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlholdings"
+	"github.com/bufdev/ibctl/internal/ibctl/ibctlmerge"
 	"github.com/bufdev/ibctl/internal/pkg/cliio"
+	"github.com/bufdev/ibctl/internal/pkg/ibkractivitycsv"
 	"github.com/spf13/pflag"
 )
 
@@ -38,6 +40,8 @@ func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 }
 
 type flags struct {
+	// Config is the path to the configuration file.
+	Config string
 	// Format is the output format (table, csv, json).
 	Format string
 }
@@ -48,12 +52,8 @@ func newFlags() *flags {
 
 // Bind registers the flag definitions with the given flag set.
 func (f *flags) Bind(flagSet *pflag.FlagSet) {
-	flagSet.StringVar(
-		&f.Format,
-		formatFlagName,
-		"table",
-		"Output format (table, csv, json)",
-	)
+	flagSet.StringVar(&f.Config, ibctlcmd.ConfigFlagName, ibctlconfig.DefaultConfigFileName, "The configuration file path")
+	flagSet.StringVar(&f.Format, formatFlagName, "table", "Output format (table, csv, json)")
 }
 
 func run(ctx context.Context, container appext.Container, flags *flags) error {
@@ -61,23 +61,32 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	if err != nil {
 		return appcmd.NewInvalidArgumentError(err.Error())
 	}
-	// Ensure data has been downloaded (implicitly downloads if missing).
-	downloader, err := ibctlcmd.NewDownloader(container)
+	// Read and validate the configuration file.
+	config, err := ibctlconfig.ReadConfig(flags.Config)
+	if err != nil {
+		return err
+	}
+	// Ensure Flex Query data has been downloaded (implicitly downloads if missing).
+	downloader, err := ibctlcmd.NewDownloader(container, flags.Config)
 	if err != nil {
 		return err
 	}
 	if err := downloader.EnsureDownloaded(ctx); err != nil {
 		return err
 	}
-	// Read config for symbol classifications.
-	config, err := ibctlconfig.ReadConfig(container.ConfigDirPath())
+	// Read Activity Statement CSVs.
+	csvStatements, err := ibkractivitycsv.ParseDirectory(config.ActivityStatementsDirPath)
 	if err != nil {
 		return err
 	}
-	// Compute the versioned data directory path.
-	dataDirV1Path := ibctlconfig.DataDirV1Path(container.DataDirPath())
-	// Get the holdings overview data.
-	holdingsOverview, err := ibctlholdings.GetHoldingsOverview(dataDirV1Path, config)
+	// Merge CSV seed data with Flex Query cached data.
+	dataDirV1Path := config.DataDirV1Path
+	mergedData, err := ibctlmerge.Merge(csvStatements, dataDirV1Path)
+	if err != nil {
+		return err
+	}
+	// Compute the holdings overview from merged data.
+	holdingsOverview, err := ibctlholdings.GetHoldingsOverview(mergedData.Trades, mergedData.Positions, config)
 	if err != nil {
 		return err
 	}

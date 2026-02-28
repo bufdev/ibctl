@@ -28,7 +28,7 @@ func newRootCommand(name string) *appcmd.Command {
 		Long: `Analyze Interactive Brokers holdings and trades.
 
 Configuration: ~/.config/ibctl/config.yaml (override with IBCTL_CONFIG_DIR)
-Data:          ~/.local/share/ibctl        (override with IBCTL_DATA_DIR)
+Data:          Configured via data_dir in config.yaml
 
 Run "ibctl config init" to create a configuration file.`,
 		BindPersistentFlags: builder.BindRoot,

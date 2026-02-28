@@ -2,8 +2,7 @@
 //
 // All rights reserved.
 
-// Package ibctlcmd provides shared wiring for ibctl commands that need
-// the download pipeline (reading config, getting the IBKR token, constructing clients).
+// Package ibctlcmd provides shared wiring for ibctl commands.
 package ibctlcmd
 
 import (
@@ -16,25 +15,28 @@ import (
 	"github.com/bufdev/ibctl/internal/pkg/ibkrflexquery"
 )
 
-// ibkrTokenEnvVar is the environment variable name for the IBKR Flex Web Service token.
-const ibkrTokenEnvVar = "IBKR_TOKEN"
+const (
+	// ConfigFlagName is the flag name for the configuration file path.
+	ConfigFlagName = "config"
+	// ibkrFlexWebServiceTokenEnvVar is the environment variable name for the IBKR Flex Web Service token.
+	ibkrFlexWebServiceTokenEnvVar = "IBKR_FLEX_WEB_SERVICE_TOKEN"
+)
 
-// NewDownloader constructs a Downloader from the appext container by reading the
-// config file, extracting the IBKR token from the environment, and creating the
-// required API clients.
-func NewDownloader(container appext.Container) (ibctldownload.Downloader, error) {
+// NewDownloader constructs a Downloader by reading the config file, extracting the
+// IBKR token from the environment, and creating the required API clients.
+func NewDownloader(container appext.Container, configFilePath string) (ibctldownload.Downloader, error) {
 	// Read and validate the configuration file.
-	config, err := ibctlconfig.ReadConfig(container.ConfigDirPath())
+	config, err := ibctlconfig.ReadConfig(configFilePath)
 	if err != nil {
 		return nil, err
 	}
 	// Read the IBKR token from the environment via the app container.
-	ibkrToken := container.Env(ibkrTokenEnvVar)
+	ibkrToken := container.Env(ibkrFlexWebServiceTokenEnvVar)
 	if ibkrToken == "" {
-		return nil, errors.New("IBKR_TOKEN environment variable is required, set it to your IBKR Flex Web Service token (see \"ibctl --help\" for details)")
+		return nil, errors.New(ibkrFlexWebServiceTokenEnvVar + " environment variable is required, set it to your IBKR Flex Web Service token (see \"ibctl --help\" for details)")
 	}
-	// Compute the versioned data directory path.
-	dataDirV1Path := ibctlconfig.DataDirV1Path(container.DataDirPath())
+	// Use the data directory from config.
+	dataDirV1Path := config.DataDirV1Path
 	// Extract the logger from the appext container.
 	logger := container.Logger()
 	// Construct the API clients.
