@@ -12,6 +12,7 @@ import (
 	"time"
 
 	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
+	"github.com/bufdev/ibctl/internal/pkg/mathpb"
 	"github.com/bufdev/ibctl/internal/pkg/moneypb"
 	"github.com/bufdev/ibctl/internal/pkg/timepb"
 	"github.com/bufdev/ibctl/internal/standard/xtime"
@@ -60,7 +61,7 @@ func ComputeTaxLots(trades []*datav1.Trade) ([]*datav1.TaxLot, error) {
 					return nil, fmt.Errorf("parsing trade date for %s: %w", symbol, err)
 				}
 				// Create a new tax lot from the buy trade.
-				tradeQuantityMicros := quantityToTotalMicros(trade)
+				tradeQuantityMicros := mathpb.ToMicros(trade.GetQuantity())
 				symbolLots[symbol] = append(symbolLots[symbol], &taxLot{
 					symbol:          symbol,
 					openDate:        openDate,
@@ -71,7 +72,7 @@ func ComputeTaxLots(trades []*datav1.Trade) ([]*datav1.TaxLot, error) {
 			case datav1.TradeSide_TRADE_SIDE_SELL:
 				// Sells consume the oldest lots first (FIFO).
 				// Sell quantity is negative, so negate to get the positive amount to consume.
-				remainingMicros := -quantityToTotalMicros(trade)
+				remainingMicros := -mathpb.ToMicros(trade.GetQuantity())
 				lots := symbolLots[symbol]
 				for len(lots) > 0 && remainingMicros > 0 {
 					lot := lots[0]
@@ -103,8 +104,7 @@ func ComputeTaxLots(trades []*datav1.Trade) ([]*datav1.TaxLot, error) {
 			result = append(result, &datav1.TaxLot{
 				Symbol:         lot.symbol,
 				OpenDate:       protoOpenDate,
-				QuantityUnits:  lot.quantityMicros / microsFactor,
-				QuantityMicros: lot.quantityMicros % microsFactor,
+				Quantity:       mathpb.FromMicros(lot.quantityMicros),
 				CostBasisPrice: moneypb.MoneyFromMicros(lot.currencyCode, lot.costBasisMicros),
 				CurrencyCode:   lot.currencyCode,
 			})
@@ -135,7 +135,7 @@ func ComputePositions(taxLots []*datav1.TaxLot) []*datav1.ComputedPosition {
 			data = &symbolData{currencyCode: lot.GetCurrencyCode()}
 			symbolDataMap[lot.GetSymbol()] = data
 		}
-		lotQtyMicros := lot.GetQuantityUnits()*microsFactor + lot.GetQuantityMicros()
+		lotQtyMicros := mathpb.ToMicros(lot.GetQuantity())
 		data.quantityMicros += lotQtyMicros
 		// Total cost is price * quantity (both in micros, divide by microsFactor to avoid overflow).
 		data.totalCostMicros += moneypb.MoneyToMicros(lot.GetCostBasisPrice()) * lotQtyMicros / microsFactor
@@ -150,8 +150,7 @@ func ComputePositions(taxLots []*datav1.TaxLot) []*datav1.ComputedPosition {
 		avgCostMicros := data.totalCostMicros * microsFactor / data.quantityMicros
 		positions = append(positions, &datav1.ComputedPosition{
 			Symbol:                symbol,
-			QuantityUnits:         data.quantityMicros / microsFactor,
-			QuantityMicros:        data.quantityMicros % microsFactor,
+			Quantity:              mathpb.FromMicros(data.quantityMicros),
 			AverageCostBasisPrice: moneypb.MoneyFromMicros(data.currencyCode, avgCostMicros),
 			CurrencyCode:          data.currencyCode,
 		})
@@ -193,10 +192,10 @@ func VerifyPositions(computed []*datav1.ComputedPosition, reported []*datav1.Pos
 			notes = append(notes, symbol+": computed position exists but not reported by IBKR")
 			continue
 		}
-		compQty := comp.GetQuantityUnits()*microsFactor + comp.GetQuantityMicros()
-		repQty := rep.GetQuantityUnits()*microsFactor + rep.GetQuantityMicros()
+		compQty := mathpb.ToMicros(comp.GetQuantity())
+		repQty := mathpb.ToMicros(rep.GetQuantity())
 		if compQty != repQty {
-			notes = append(notes, fmt.Sprintf("%s: quantity mismatch: computed=%d.%06d, reported=%d.%06d", symbol, comp.GetQuantityUnits(), comp.GetQuantityMicros(), rep.GetQuantityUnits(), rep.GetQuantityMicros()))
+			notes = append(notes, fmt.Sprintf("%s: quantity mismatch: computed=%s, reported=%s", symbol, mathpb.ToString(comp.GetQuantity()), mathpb.ToString(rep.GetQuantity())))
 		}
 		computedAvgPrice := moneypb.MoneyValueToString(comp.GetAverageCostBasisPrice())
 		reportedAvgPrice := moneypb.MoneyValueToString(rep.GetCostBasisPrice())
@@ -244,9 +243,4 @@ func protoDateToXtimeDate(d interface {
 		Month: time.Month(d.GetMonth()),
 		Day:   int(d.GetDay()),
 	}, nil
-}
-
-// quantityToTotalMicros converts a trade's quantity_units/quantity_micros to total micros.
-func quantityToTotalMicros(trade *datav1.Trade) int64 {
-	return trade.GetQuantityUnits()*microsFactor + trade.GetQuantityMicros()
 }

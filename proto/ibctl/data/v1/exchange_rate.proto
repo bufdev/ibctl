@@ -7,6 +7,7 @@ syntax = "proto3";
 package ibctl.data.v1;
 
 import "buf/validate/validate.proto";
+import "standard/math/v1/decimal.proto";
 import "standard/time/v1/date.proto";
 
 // ExchangeRate represents a currency exchange rate for a given date.
@@ -17,14 +18,8 @@ message ExchangeRate {
   string base_currency_code = 2 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
   // The quote currency code (e.g., "CAD").
   string quote_currency_code = 3 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
-  // The whole units of the exchange rate (e.g., 1 for a rate of 1.3456).
-  int64 rate_units = 4;
-  // The micro units of the exchange rate (e.g., 345600 for a rate of 1.3456).
-  // Must be between -999999 and 999999. Sign must match rate_units.
-  int64 rate_micros = 5 [
-    (buf.validate.field).int64.gte = -999999,
-    (buf.validate.field).int64.lte = 999999
-  ];
+  // The exchange rate as a decimal value.
+  standard.math.v1.Decimal rate = 4 [(buf.validate.field).required = true];
   // The source of the exchange rate data (e.g., "ibkr", "frankfurter").
-  string provider = 6 [(buf.validate.field).required = true];
+  string provider = 5 [(buf.validate.field).required = true];
 }

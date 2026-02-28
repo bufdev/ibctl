@@ -7,6 +7,7 @@ syntax = "proto3";
 package ibctl.data.v1;
 
 import "buf/validate/validate.proto";
+import "standard/math/v1/decimal.proto";
 import "standard/money/v1/money.proto";
 import "standard/time/v1/date.proto";
 
@@ -54,14 +55,8 @@ message Trade {
   string asset_category = 6 [(buf.validate.field).required = true];
   // Whether this trade is a buy or a sell.
   TradeSide side = 7 [(buf.validate.field).enum.not_in = 0];
-  // The whole units of the quantity traded (e.g., 100 for 100.5 shares).
-  int64 quantity_units = 8;
-  // The micro units of the quantity traded (e.g., 500000 for 100.5 shares).
-  // Must be between -999999 and 999999. Sign must match quantity_units.
-  int64 quantity_micros = 14 [
-    (buf.validate.field).int64.gte = -999999,
-    (buf.validate.field).int64.lte = 999999
-  ];
+  // The quantity traded. Positive for buys, negative for sells.
+  standard.math.v1.Decimal quantity = 8 [(buf.validate.field).required = true];
   // The price per share or contract.
   standard.money.v1.Money trade_price = 9 [(buf.validate.field).required = true];
   // The total trade proceeds.

@@ -24,6 +24,7 @@ import (
 	"github.com/bufdev/ibctl/internal/ibctl/ibctltaxlot"
 	"github.com/bufdev/ibctl/internal/pkg/frankfurter"
 	"github.com/bufdev/ibctl/internal/pkg/ibkrflexquery"
+	"github.com/bufdev/ibctl/internal/pkg/mathpb"
 	"github.com/bufdev/ibctl/internal/pkg/moneypb"
 	"github.com/bufdev/ibctl/internal/pkg/protoio"
 	"github.com/bufdev/ibctl/internal/pkg/timepb"
@@ -44,7 +45,7 @@ type Downloader interface {
 
 // NewDownloader creates a new Downloader with all required dependencies.
 // The ibkrToken is the Flex Web Service token from the IBKR_TOKEN environment variable.
-// The dataDirV1Path is the versioned data directory (e.g., ~/.local/share/ibctl/v1).
+// The dataDirV1Path is the versioned data directory (e.g., <data_dir>/v1).
 func NewDownloader(
 	logger *slog.Logger,
 	ibkrToken string,
@@ -348,8 +349,8 @@ func (d *downloader) extractExchangeRates(cashTransactions []ibkrflexquery.XMLCa
 		if err != nil {
 			continue
 		}
-		// Parse the FX rate string into units and micros using a dummy Money.
-		rateMoney, err := moneypb.NewProtoMoney("USD", ct.FxRateToBase)
+		// Parse the FX rate string into a Decimal.
+		rate, err := mathpb.NewDecimal(ct.FxRateToBase)
 		if err != nil {
 			continue
 		}
@@ -357,8 +358,7 @@ func (d *downloader) extractExchangeRates(cashTransactions []ibkrflexquery.XMLCa
 			Date:              protoDate,
 			BaseCurrencyCode:  ct.Currency,
 			QuoteCurrencyCode: "USD",
-			RateUnits:         rateMoney.GetUnits(),
-			RateMicros:        rateMoney.GetMicros(),
+			Rate:              rate,
 			Provider:          "ibkr",
 		})
 	}
@@ -432,8 +432,8 @@ func (d *downloader) fetchMissingExchangeRates(ctx context.Context, existingRate
 			if err != nil {
 				continue
 			}
-			// Parse the FX rate string into units and micros using a dummy Money.
-			rateMoney, err := moneypb.NewProtoMoney("USD", rate)
+			// Parse the FX rate string into a Decimal.
+			rateDecimal, err := mathpb.NewDecimal(rate)
 			if err != nil {
 				continue
 			}
@@ -441,8 +441,7 @@ func (d *downloader) fetchMissingExchangeRates(ctx context.Context, existingRate
 				Date:              protoDate,
 				BaseCurrencyCode:  currency,
 				QuoteCurrencyCode: "USD",
-				RateUnits:         rateMoney.GetUnits(),
-				RateMicros:        rateMoney.GetMicros(),
+				Rate:              rateDecimal,
 				Provider:          "frankfurter",
 			})
 		}
@@ -489,7 +488,7 @@ func xmlTradeToProto(xmlTrade *ibkrflexquery.XMLTrade) (*datav1.Trade, error) {
 		return nil, fmt.Errorf("parsing fifo pnl realized: %w", err)
 	}
 	// Parse the quantity as a decimal (supports fractional shares).
-	quantityUnits, quantityMicros, err := moneypb.ParseDecimalToUnitsMicros(xmlTrade.Quantity)
+	quantity, err := mathpb.NewDecimal(xmlTrade.Quantity)
 	if err != nil {
 		return nil, fmt.Errorf("parsing quantity %q: %w", xmlTrade.Quantity, err)
 	}
@@ -501,8 +500,7 @@ func xmlTradeToProto(xmlTrade *ibkrflexquery.XMLTrade) (*datav1.Trade, error) {
 		Description:     xmlTrade.Description,
 		AssetCategory:   xmlTrade.AssetCategory,
 		Side:            parseTradeSide(xmlTrade.BuySell),
-		QuantityUnits:   quantityUnits,
-		QuantityMicros:  quantityMicros,
+		Quantity:        quantity,
 		TradePrice:      tradePrice,
 		Proceeds:        proceeds,
 		Commission:      commission,
@@ -532,7 +530,7 @@ func xmlPositionToProto(xmlPosition *ibkrflexquery.XMLPosition) (*datav1.Positio
 		return nil, fmt.Errorf("parsing fifo pnl unrealized: %w", err)
 	}
 	// Parse the quantity as a decimal (supports fractional shares).
-	quantityUnits, quantityMicros, err := moneypb.ParseDecimalToUnitsMicros(xmlPosition.Quantity)
+	quantity, err := mathpb.NewDecimal(xmlPosition.Quantity)
 	if err != nil {
 		return nil, fmt.Errorf("parsing quantity %q: %w", xmlPosition.Quantity, err)
 	}
@@ -540,8 +538,7 @@ func xmlPositionToProto(xmlPosition *ibkrflexquery.XMLPosition) (*datav1.Positio
 		Symbol:            xmlPosition.Symbol,
 		Description:       xmlPosition.Description,
 		AssetCategory:     xmlPosition.AssetCategory,
-		QuantityUnits:     quantityUnits,
-		QuantityMicros:    quantityMicros,
+		Quantity:          quantity,
 		CostBasisPrice:    costBasisPrice,
 		MarketPrice:       marketPrice,
 		MarketValue:       marketValue,

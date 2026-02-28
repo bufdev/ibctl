@@ -7,32 +7,12 @@ syntax = "proto3";
 package standard.money.v1;
 
 import "buf/validate/validate.proto";
+import "standard/math/v1/decimal.proto";
 
 // Money represents a monetary amount in a specific currency.
 message Money {
-  option (buf.validate.message).cel = {
-    id: "micros_positive"
-    message: "micros must be positive or zero if units is positive"
-    expression: "this.units <= 0 || this.micros >= 0"
-  };
-  option (buf.validate.message).cel = {
-    id: "micros_negative"
-    message: "micros must be negative or zero if units is negative"
-    expression: "this.units >= 0 || this.micros <= 0"
-  };
-
   // The three-letter ISO 4217 currency code (e.g., "USD").
   string currency_code = 1 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
-  // The whole units.
-  //
-  // Example: If currency_code is USD, $1 is represented with 1 unit.
-  int64 units = 2;
-  // The micro units.
-  //
-  // If units is positive, this must be positive or zero.
-  // If units is negative, this must be negative or zero.
-  int64 micros = 3 [
-    (buf.validate.field).int64.gte = -999999,
-    (buf.validate.field).int64.lte = 999999
-  ];
+  // The monetary amount as a decimal value.
+  standard.math.v1.Decimal amount = 2 [(buf.validate.field).required = true];
 }

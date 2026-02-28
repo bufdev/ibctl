@@ -12,7 +12,8 @@ package datav1
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
-	v11 "github.com/bufdev/ibctl/internal/gen/proto/go/standard/money/v1"
+	v11 "github.com/bufdev/ibctl/internal/gen/proto/go/standard/math/v1"
+	v12 "github.com/bufdev/ibctl/internal/gen/proto/go/standard/money/v1"
 	v1 "github.com/bufdev/ibctl/internal/gen/proto/go/standard/time/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -95,22 +96,19 @@ type Trade struct {
 	AssetCategory string `protobuf:"bytes,6,opt,name=asset_category,json=assetCategory,proto3" json:"asset_category,omitempty"`
 	// Whether this trade is a buy or a sell.
 	Side TradeSide `protobuf:"varint,7,opt,name=side,proto3,enum=ibctl.data.v1.TradeSide" json:"side,omitempty"`
-	// The whole units of the quantity traded (e.g., 100 for 100.5 shares).
-	QuantityUnits int64 `protobuf:"varint,8,opt,name=quantity_units,json=quantityUnits,proto3" json:"quantity_units,omitempty"`
-	// The micro units of the quantity traded (e.g., 500000 for 100.5 shares).
-	// Must be between -999999 and 999999. Sign must match quantity_units.
-	QuantityMicros int64 `protobuf:"varint,14,opt,name=quantity_micros,json=quantityMicros,proto3" json:"quantity_micros,omitempty"`
+	// The quantity traded. Positive for buys, negative for sells.
+	Quantity *v11.Decimal `protobuf:"bytes,8,opt,name=quantity,proto3" json:"quantity,omitempty"`
 	// The price per share or contract.
-	TradePrice *v11.Money `protobuf:"bytes,9,opt,name=trade_price,json=tradePrice,proto3" json:"trade_price,omitempty"`
+	TradePrice *v12.Money `protobuf:"bytes,9,opt,name=trade_price,json=tradePrice,proto3" json:"trade_price,omitempty"`
 	// The total trade proceeds.
-	Proceeds *v11.Money `protobuf:"bytes,10,opt,name=proceeds,proto3" json:"proceeds,omitempty"`
+	Proceeds *v12.Money `protobuf:"bytes,10,opt,name=proceeds,proto3" json:"proceeds,omitempty"`
 	// The commission paid for this trade.
-	Commission *v11.Money `protobuf:"bytes,11,opt,name=commission,proto3" json:"commission,omitempty"`
+	Commission *v12.Money `protobuf:"bytes,11,opt,name=commission,proto3" json:"commission,omitempty"`
 	// The three-letter ISO 4217 currency code for this trade.
 	// All Money fields must use this same currency code.
 	CurrencyCode string `protobuf:"bytes,12,opt,name=currency_code,json=currencyCode,proto3" json:"currency_code,omitempty"`
 	// The realized P&L computed by IBKR using FIFO.
-	FifoPnlRealized *v11.Money `protobuf:"bytes,13,opt,name=fifo_pnl_realized,json=fifoPnlRealized,proto3" json:"fifo_pnl_realized,omitempty"`
+	FifoPnlRealized *v12.Money `protobuf:"bytes,13,opt,name=fifo_pnl_realized,json=fifoPnlRealized,proto3" json:"fifo_pnl_realized,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -194,35 +192,28 @@ func (x *Trade) GetSide() TradeSide {
 	return TradeSide_TRADE_SIDE_UNSPECIFIED
 }
 
-func (x *Trade) GetQuantityUnits() int64 {
+func (x *Trade) GetQuantity() *v11.Decimal {
 	if x != nil {
-		return x.QuantityUnits
+		return x.Quantity
 	}
-	return 0
+	return nil
 }
 
-func (x *Trade) GetQuantityMicros() int64 {
-	if x != nil {
-		return x.QuantityMicros
-	}
-	return 0
-}
-
-func (x *Trade) GetTradePrice() *v11.Money {
+func (x *Trade) GetTradePrice() *v12.Money {
 	if x != nil {
 		return x.TradePrice
 	}
 	return nil
 }
 
-func (x *Trade) GetProceeds() *v11.Money {
+func (x *Trade) GetProceeds() *v12.Money {
 	if x != nil {
 		return x.Proceeds
 	}
 	return nil
 }
 
-func (x *Trade) GetCommission() *v11.Money {
+func (x *Trade) GetCommission() *v12.Money {
 	if x != nil {
 		return x.Commission
 	}
@@ -236,7 +227,7 @@ func (x *Trade) GetCurrencyCode() string {
 	return ""
 }
 
-func (x *Trade) GetFifoPnlRealized() *v11.Money {
+func (x *Trade) GetFifoPnlRealized() *v12.Money {
 	if x != nil {
 		return x.FifoPnlRealized
 	}
@@ -247,7 +238,7 @@ var File_ibctl_data_v1_trade_proto protoreflect.FileDescriptor
 
 const file_ibctl_data_v1_trade_proto_rawDesc = "" +
 	"\n" +
-	"\x19ibctl/data/v1/trade.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1dstandard/money/v1/money.proto\x1a\x1bstandard/time/v1/date.proto\"\xca\n" +
+	"\x19ibctl/data/v1/trade.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1estandard/math/v1/decimal.proto\x1a\x1dstandard/money/v1/money.proto\x1a\x1bstandard/time/v1/date.proto\"\xa3\n" +
 	"\n" +
 	"\x05Trade\x12!\n" +
 	"\btrade_id\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\atradeId\x12=\n" +
@@ -258,9 +249,8 @@ const file_ibctl_data_v1_trade_proto_rawDesc = "" +
 	"\x06symbol\x18\x04 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x06symbol\x12 \n" +
 	"\vdescription\x18\x05 \x01(\tR\vdescription\x12-\n" +
 	"\x0easset_category\x18\x06 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\rassetCategory\x126\n" +
-	"\x04side\x18\a \x01(\x0e2\x18.ibctl.data.v1.TradeSideB\b\xbaH\x05\x82\x01\x02 \x00R\x04side\x12%\n" +
-	"\x0equantity_units\x18\b \x01(\x03R\rquantityUnits\x12=\n" +
-	"\x0fquantity_micros\x18\x0e \x01(\x03B\x14\xbaH\x11\"\x0f\x18\xbf\x84=(\xc1\xfb\xc2\xff\xff\xff\xff\xff\xff\x01R\x0equantityMicros\x12A\n" +
+	"\x04side\x18\a \x01(\x0e2\x18.ibctl.data.v1.TradeSideB\b\xbaH\x05\x82\x01\x02 \x00R\x04side\x12=\n" +
+	"\bquantity\x18\b \x01(\v2\x19.standard.math.v1.DecimalB\x06\xbaH\x03\xc8\x01\x01R\bquantity\x12A\n" +
 	"\vtrade_price\x18\t \x01(\v2\x18.standard.money.v1.MoneyB\x06\xbaH\x03\xc8\x01\x01R\n" +
 	"tradePrice\x12<\n" +
 	"\bproceeds\x18\n" +
@@ -297,24 +287,26 @@ func file_ibctl_data_v1_trade_proto_rawDescGZIP() []byte {
 var file_ibctl_data_v1_trade_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_ibctl_data_v1_trade_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_ibctl_data_v1_trade_proto_goTypes = []any{
-	(TradeSide)(0),    // 0: ibctl.data.v1.TradeSide
-	(*Trade)(nil),     // 1: ibctl.data.v1.Trade
-	(*v1.Date)(nil),   // 2: standard.time.v1.Date
-	(*v11.Money)(nil), // 3: standard.money.v1.Money
+	(TradeSide)(0),      // 0: ibctl.data.v1.TradeSide
+	(*Trade)(nil),       // 1: ibctl.data.v1.Trade
+	(*v1.Date)(nil),     // 2: standard.time.v1.Date
+	(*v11.Decimal)(nil), // 3: standard.math.v1.Decimal
+	(*v12.Money)(nil),   // 4: standard.money.v1.Money
 }
 var file_ibctl_data_v1_trade_proto_depIdxs = []int32{
 	2, // 0: ibctl.data.v1.Trade.trade_date:type_name -> standard.time.v1.Date
 	2, // 1: ibctl.data.v1.Trade.settle_date:type_name -> standard.time.v1.Date
 	0, // 2: ibctl.data.v1.Trade.side:type_name -> ibctl.data.v1.TradeSide
-	3, // 3: ibctl.data.v1.Trade.trade_price:type_name -> standard.money.v1.Money
-	3, // 4: ibctl.data.v1.Trade.proceeds:type_name -> standard.money.v1.Money
-	3, // 5: ibctl.data.v1.Trade.commission:type_name -> standard.money.v1.Money
-	3, // 6: ibctl.data.v1.Trade.fifo_pnl_realized:type_name -> standard.money.v1.Money
-	7, // [7:7] is the sub-list for method output_type
-	7, // [7:7] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	3, // 3: ibctl.data.v1.Trade.quantity:type_name -> standard.math.v1.Decimal
+	4, // 4: ibctl.data.v1.Trade.trade_price:type_name -> standard.money.v1.Money
+	4, // 5: ibctl.data.v1.Trade.proceeds:type_name -> standard.money.v1.Money
+	4, // 6: ibctl.data.v1.Trade.commission:type_name -> standard.money.v1.Money
+	4, // 7: ibctl.data.v1.Trade.fifo_pnl_realized:type_name -> standard.money.v1.Money
+	8, // [8:8] is the sub-list for method output_type
+	8, // [8:8] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_ibctl_data_v1_trade_proto_init() }

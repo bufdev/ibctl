@@ -1,0 +1,37 @@
+// Copyright 2026 Peter Edge
+//
+// All rights reserved.
+
+syntax = "proto3";
+
+package standard.math.v1;
+
+import "buf/validate/validate.proto";
+
+// Decimal represents a decimal number as units and micros (6 decimal places).
+//
+// The value is units + micros / 1_000_000. For example, 123.456789 is
+// represented as units=123, micros=456789.
+message Decimal {
+  option (buf.validate.message).cel = {
+    id: "micros_positive"
+    message: "micros must be positive or zero if units is positive"
+    expression: "this.units <= 0 || this.micros >= 0"
+  };
+  option (buf.validate.message).cel = {
+    id: "micros_negative"
+    message: "micros must be negative or zero if units is negative"
+    expression: "this.units >= 0 || this.micros <= 0"
+  };
+
+  // The whole units of the decimal value.
+  int64 units = 1;
+  // The fractional part in millionths (6 decimal places).
+  //
+  // If units is positive, this must be positive or zero.
+  // If units is negative, this must be negative or zero.
+  int64 micros = 2 [
+    (buf.validate.field).int64.gte = -999999,
+    (buf.validate.field).int64.lte = 999999
+  ];
+}

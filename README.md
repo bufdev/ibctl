@@ -48,7 +48,7 @@ Follow these exact steps in the IBKR portal to create a Flex Query and generate 
 
 | Path | Purpose | Override |
 |------|---------|----------|
-| `~/.config/ibctl/config.yaml` | Configuration file | `IBCTL_CONFIG_DIR` |
+| `ibctl.yaml` | Configuration file in current directory | `--config` flag |
 | `<data_dir>/v1/` | Downloaded data cache | Set `data_dir` in config |
 
 ## Environment Variables
@@ -56,7 +56,6 @@ Follow these exact steps in the IBKR portal to create a Flex Query and generate 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `IBKR_FLEX_WEB_SERVICE_TOKEN` | Yes (for `download`) | Your IBKR Flex Web Service token. This is read-only — it can only retrieve reports, not make trades or modify your account. Never store this in configuration files or commit it to version control. |
-| `IBCTL_CONFIG_DIR` | No | Override the configuration directory (default: `~/.config/ibctl`). |
 
 ## Configuration
 
@@ -187,7 +186,7 @@ To keep data current, the Flex Query API provides the latest 365 days. To add ol
 
 ## Data Storage
 
-All data is cached as protobuf-JSON files under the data directory (`~/.local/share/ibctl/v1/` by default). Each file stores newline-separated proto JSON (one message per line), serialized using `protojson` with proto field names. `metadata.json` is a single message.
+All data is cached as protobuf-JSON files under the data directory (`<data_dir>/v1/` as configured in `ibctl.yaml`). Each file stores newline-separated proto JSON (one message per line), serialized using `protojson` with proto field names. `metadata.json` is a single message.
 
 | File | Protobuf Message | Description |
 |------|-----------------|-------------|

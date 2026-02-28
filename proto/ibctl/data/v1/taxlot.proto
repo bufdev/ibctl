@@ -7,6 +7,7 @@ syntax = "proto3";
 package ibctl.data.v1;
 
 import "buf/validate/validate.proto";
+import "standard/math/v1/decimal.proto";
 import "standard/money/v1/money.proto";
 import "standard/time/v1/date.proto";
 
@@ -22,14 +23,8 @@ message TaxLot {
   string symbol = 1 [(buf.validate.field).required = true];
   // The date the lot was opened (trade date of the buy).
   standard.time.v1.Date open_date = 2 [(buf.validate.field).required = true];
-  // The whole units of the quantity remaining in this lot.
-  int64 quantity_units = 3;
-  // The micro units of the quantity remaining.
-  // Must be between -999999 and 999999. Sign must match quantity_units.
-  int64 quantity_micros = 7 [
-    (buf.validate.field).int64.gte = -999999,
-    (buf.validate.field).int64.lte = 999999
-  ];
+  // The quantity remaining in this lot.
+  standard.math.v1.Decimal quantity = 3 [(buf.validate.field).required = true];
   // The cost basis price per share.
   standard.money.v1.Money cost_basis_price = 4 [(buf.validate.field).required = true];
   // The three-letter ISO 4217 currency code for this tax lot.
@@ -47,14 +42,8 @@ message ComputedPosition {
 
   // The ticker symbol.
   string symbol = 1 [(buf.validate.field).required = true];
-  // The whole units of the total quantity across all tax lots.
-  int64 quantity_units = 2;
-  // The micro units of the total quantity.
-  // Must be between -999999 and 999999. Sign must match quantity_units.
-  int64 quantity_micros = 5 [
-    (buf.validate.field).int64.gte = -999999,
-    (buf.validate.field).int64.lte = 999999
-  ];
+  // The total quantity across all tax lots.
+  standard.math.v1.Decimal quantity = 2 [(buf.validate.field).required = true];
   // The weighted average cost basis price per share.
   standard.money.v1.Money average_cost_basis_price = 3 [(buf.validate.field).required = true];
   // The three-letter ISO 4217 currency code for this position.

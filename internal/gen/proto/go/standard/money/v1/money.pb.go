@@ -12,6 +12,7 @@ package moneyv1
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
+	v1 "github.com/bufdev/ibctl/internal/gen/proto/go/standard/math/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -31,15 +32,8 @@ type Money struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The three-letter ISO 4217 currency code (e.g., "USD").
 	CurrencyCode string `protobuf:"bytes,1,opt,name=currency_code,json=currencyCode,proto3" json:"currency_code,omitempty"`
-	// The whole units.
-	//
-	// Example: If currency_code is USD, $1 is represented with 1 unit.
-	Units int64 `protobuf:"varint,2,opt,name=units,proto3" json:"units,omitempty"`
-	// The micro units.
-	//
-	// If units is positive, this must be positive or zero.
-	// If units is negative, this must be negative or zero.
-	Micros        int64 `protobuf:"varint,3,opt,name=micros,proto3" json:"micros,omitempty"`
+	// The monetary amount as a decimal value.
+	Amount        *v1.Decimal `protobuf:"bytes,2,opt,name=amount,proto3" json:"amount,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -81,32 +75,22 @@ func (x *Money) GetCurrencyCode() string {
 	return ""
 }
 
-func (x *Money) GetUnits() int64 {
+func (x *Money) GetAmount() *v1.Decimal {
 	if x != nil {
-		return x.Units
+		return x.Amount
 	}
-	return 0
-}
-
-func (x *Money) GetMicros() int64 {
-	if x != nil {
-		return x.Micros
-	}
-	return 0
+	return nil
 }
 
 var File_standard_money_v1_money_proto protoreflect.FileDescriptor
 
 const file_standard_money_v1_money_proto_rawDesc = "" +
 	"\n" +
-	"\x1dstandard/money/v1/money.proto\x12\x11standard.money.v1\x1a\x1bbuf/validate/validate.proto\"\xe6\x02\n" +
+	"\x1dstandard/money/v1/money.proto\x12\x11standard.money.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1estandard/math/v1/decimal.proto\"z\n" +
 	"\x05Money\x126\n" +
 	"\rcurrency_code\x18\x01 \x01(\tB\x11\xbaH\x0er\f2\n" +
-	"^[A-Z]{3}$R\fcurrencyCode\x12\x14\n" +
-	"\x05units\x18\x02 \x01(\x03R\x05units\x12,\n" +
-	"\x06micros\x18\x03 \x01(\x03B\x14\xbaH\x11\"\x0f\x18\xbf\x84=(\xc1\xfb\xc2\xff\xff\xff\xff\xff\xff\x01R\x06micros:\xe0\x01\xbaH\xdc\x01\x1al\n" +
-	"\x0fmicros_positive\x124micros must be positive or zero if units is positive\x1a#this.units <= 0 || this.micros >= 0\x1al\n" +
-	"\x0fmicros_negative\x124micros must be negative or zero if units is negative\x1a#this.units >= 0 || this.micros <= 0B\xd2\x01\n" +
+	"^[A-Z]{3}$R\fcurrencyCode\x129\n" +
+	"\x06amount\x18\x02 \x01(\v2\x19.standard.math.v1.DecimalB\x06\xbaH\x03\xc8\x01\x01R\x06amountB\xd2\x01\n" +
 	"\x15com.standard.money.v1B\n" +
 	"MoneyProtoP\x01ZGgithub.com/bufdev/ibctl/internal/gen/proto/go/standard/money/v1;moneyv1\xa2\x02\x03SMX\xaa\x02\x11Standard.Money.V1\xca\x02\x11Standard\\Money\\V1\xe2\x02\x1dStandard\\Money\\V1\\GPBMetadata\xea\x02\x13Standard::Money::V1b\x06proto3"
 
@@ -124,14 +108,16 @@ func file_standard_money_v1_money_proto_rawDescGZIP() []byte {
 
 var file_standard_money_v1_money_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_standard_money_v1_money_proto_goTypes = []any{
-	(*Money)(nil), // 0: standard.money.v1.Money
+	(*Money)(nil),      // 0: standard.money.v1.Money
+	(*v1.Decimal)(nil), // 1: standard.math.v1.Decimal
 }
 var file_standard_money_v1_money_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	1, // 0: standard.money.v1.Money.amount:type_name -> standard.math.v1.Decimal
+	1, // [1:1] is the sub-list for method output_type
+	1, // [1:1] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_standard_money_v1_money_proto_init() }

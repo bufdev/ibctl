@@ -12,7 +12,8 @@ package datav1
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
-	v1 "github.com/bufdev/ibctl/internal/gen/proto/go/standard/money/v1"
+	v1 "github.com/bufdev/ibctl/internal/gen/proto/go/standard/math/v1"
+	v11 "github.com/bufdev/ibctl/internal/gen/proto/go/standard/money/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -36,19 +37,16 @@ type Position struct {
 	Description string `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
 	// The asset category (e.g., "STK", "OPT").
 	AssetCategory string `protobuf:"bytes,3,opt,name=asset_category,json=assetCategory,proto3" json:"asset_category,omitempty"`
-	// The whole units of the quantity held (may be negative for short positions).
-	QuantityUnits int64 `protobuf:"varint,4,opt,name=quantity_units,json=quantityUnits,proto3" json:"quantity_units,omitempty"`
-	// The micro units of the quantity held.
-	// Must be between -999999 and 999999. Sign must match quantity_units.
-	QuantityMicros int64 `protobuf:"varint,10,opt,name=quantity_micros,json=quantityMicros,proto3" json:"quantity_micros,omitempty"`
+	// The quantity held. May be negative for short positions.
+	Quantity *v1.Decimal `protobuf:"bytes,4,opt,name=quantity,proto3" json:"quantity,omitempty"`
 	// The cost basis price per share.
-	CostBasisPrice *v1.Money `protobuf:"bytes,5,opt,name=cost_basis_price,json=costBasisPrice,proto3" json:"cost_basis_price,omitempty"`
+	CostBasisPrice *v11.Money `protobuf:"bytes,5,opt,name=cost_basis_price,json=costBasisPrice,proto3" json:"cost_basis_price,omitempty"`
 	// The current market price per share.
-	MarketPrice *v1.Money `protobuf:"bytes,6,opt,name=market_price,json=marketPrice,proto3" json:"market_price,omitempty"`
+	MarketPrice *v11.Money `protobuf:"bytes,6,opt,name=market_price,json=marketPrice,proto3" json:"market_price,omitempty"`
 	// The total market value of the position.
-	MarketValue *v1.Money `protobuf:"bytes,7,opt,name=market_value,json=marketValue,proto3" json:"market_value,omitempty"`
+	MarketValue *v11.Money `protobuf:"bytes,7,opt,name=market_value,json=marketValue,proto3" json:"market_value,omitempty"`
 	// The unrealized P&L computed by IBKR using FIFO.
-	FifoPnlUnrealized *v1.Money `protobuf:"bytes,8,opt,name=fifo_pnl_unrealized,json=fifoPnlUnrealized,proto3" json:"fifo_pnl_unrealized,omitempty"`
+	FifoPnlUnrealized *v11.Money `protobuf:"bytes,8,opt,name=fifo_pnl_unrealized,json=fifoPnlUnrealized,proto3" json:"fifo_pnl_unrealized,omitempty"`
 	// The three-letter ISO 4217 currency code for this position.
 	// All Money fields must use this same currency code.
 	CurrencyCode  string `protobuf:"bytes,9,opt,name=currency_code,json=currencyCode,proto3" json:"currency_code,omitempty"`
@@ -107,42 +105,35 @@ func (x *Position) GetAssetCategory() string {
 	return ""
 }
 
-func (x *Position) GetQuantityUnits() int64 {
+func (x *Position) GetQuantity() *v1.Decimal {
 	if x != nil {
-		return x.QuantityUnits
+		return x.Quantity
 	}
-	return 0
+	return nil
 }
 
-func (x *Position) GetQuantityMicros() int64 {
-	if x != nil {
-		return x.QuantityMicros
-	}
-	return 0
-}
-
-func (x *Position) GetCostBasisPrice() *v1.Money {
+func (x *Position) GetCostBasisPrice() *v11.Money {
 	if x != nil {
 		return x.CostBasisPrice
 	}
 	return nil
 }
 
-func (x *Position) GetMarketPrice() *v1.Money {
+func (x *Position) GetMarketPrice() *v11.Money {
 	if x != nil {
 		return x.MarketPrice
 	}
 	return nil
 }
 
-func (x *Position) GetMarketValue() *v1.Money {
+func (x *Position) GetMarketValue() *v11.Money {
 	if x != nil {
 		return x.MarketValue
 	}
 	return nil
 }
 
-func (x *Position) GetFifoPnlUnrealized() *v1.Money {
+func (x *Position) GetFifoPnlUnrealized() *v11.Money {
 	if x != nil {
 		return x.FifoPnlUnrealized
 	}
@@ -160,14 +151,12 @@ var File_ibctl_data_v1_position_proto protoreflect.FileDescriptor
 
 const file_ibctl_data_v1_position_proto_rawDesc = "" +
 	"\n" +
-	"\x1cibctl/data/v1/position.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1dstandard/money/v1/money.proto\"\xbf\t\n" +
+	"\x1cibctl/data/v1/position.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1estandard/math/v1/decimal.proto\x1a\x1dstandard/money/v1/money.proto\"\x98\t\n" +
 	"\bPosition\x12\x1e\n" +
 	"\x06symbol\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x06symbol\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12-\n" +
-	"\x0easset_category\x18\x03 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\rassetCategory\x12%\n" +
-	"\x0equantity_units\x18\x04 \x01(\x03R\rquantityUnits\x12=\n" +
-	"\x0fquantity_micros\x18\n" +
-	" \x01(\x03B\x14\xbaH\x11\"\x0f\x18\xbf\x84=(\xc1\xfb\xc2\xff\xff\xff\xff\xff\xff\x01R\x0equantityMicros\x12J\n" +
+	"\x0easset_category\x18\x03 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\rassetCategory\x12=\n" +
+	"\bquantity\x18\x04 \x01(\v2\x19.standard.math.v1.DecimalB\x06\xbaH\x03\xc8\x01\x01R\bquantity\x12J\n" +
 	"\x10cost_basis_price\x18\x05 \x01(\v2\x18.standard.money.v1.MoneyB\x06\xbaH\x03\xc8\x01\x01R\x0ecostBasisPrice\x12C\n" +
 	"\fmarket_price\x18\x06 \x01(\v2\x18.standard.money.v1.MoneyB\x06\xbaH\x03\xc8\x01\x01R\vmarketPrice\x12C\n" +
 	"\fmarket_value\x18\a \x01(\v2\x18.standard.money.v1.MoneyB\x06\xbaH\x03\xc8\x01\x01R\vmarketValue\x12H\n" +
@@ -194,19 +183,21 @@ func file_ibctl_data_v1_position_proto_rawDescGZIP() []byte {
 
 var file_ibctl_data_v1_position_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_ibctl_data_v1_position_proto_goTypes = []any{
-	(*Position)(nil), // 0: ibctl.data.v1.Position
-	(*v1.Money)(nil), // 1: standard.money.v1.Money
+	(*Position)(nil),   // 0: ibctl.data.v1.Position
+	(*v1.Decimal)(nil), // 1: standard.math.v1.Decimal
+	(*v11.Money)(nil),  // 2: standard.money.v1.Money
 }
 var file_ibctl_data_v1_position_proto_depIdxs = []int32{
-	1, // 0: ibctl.data.v1.Position.cost_basis_price:type_name -> standard.money.v1.Money
-	1, // 1: ibctl.data.v1.Position.market_price:type_name -> standard.money.v1.Money
-	1, // 2: ibctl.data.v1.Position.market_value:type_name -> standard.money.v1.Money
-	1, // 3: ibctl.data.v1.Position.fifo_pnl_unrealized:type_name -> standard.money.v1.Money
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	1, // 0: ibctl.data.v1.Position.quantity:type_name -> standard.math.v1.Decimal
+	2, // 1: ibctl.data.v1.Position.cost_basis_price:type_name -> standard.money.v1.Money
+	2, // 2: ibctl.data.v1.Position.market_price:type_name -> standard.money.v1.Money
+	2, // 3: ibctl.data.v1.Position.market_value:type_name -> standard.money.v1.Money
+	2, // 4: ibctl.data.v1.Position.fifo_pnl_unrealized:type_name -> standard.money.v1.Money
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_ibctl_data_v1_position_proto_init() }

@@ -16,6 +16,7 @@ import (
 
 	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
 	"github.com/bufdev/ibctl/internal/pkg/ibkractivitycsv"
+	"github.com/bufdev/ibctl/internal/pkg/mathpb"
 	"github.com/bufdev/ibctl/internal/pkg/moneypb"
 	"github.com/bufdev/ibctl/internal/pkg/protoio"
 	"github.com/bufdev/ibctl/internal/pkg/timepb"
@@ -104,13 +105,13 @@ func Merge(csvStatements []*ibkractivitycsv.ActivityStatement, flexCacheDirPath 
 // csvTradeToProto converts an Activity Statement CSV trade to a proto Trade.
 func csvTradeToProto(csvTrade *ibkractivitycsv.Trade) (*datav1.Trade, error) {
 	// Parse quantity as decimal (supports fractional shares).
-	quantityUnits, quantityMicros, err := moneypb.ParseDecimalToUnitsMicros(csvTrade.Quantity)
+	quantity, err := mathpb.NewDecimal(csvTrade.Quantity)
 	if err != nil {
 		return nil, fmt.Errorf("parsing quantity %q: %w", csvTrade.Quantity, err)
 	}
 	// Determine buy/sell from quantity sign.
 	side := datav1.TradeSide_TRADE_SIDE_BUY
-	if quantityUnits < 0 || (quantityUnits == 0 && quantityMicros < 0) {
+	if mathpb.ToMicros(quantity) < 0 {
 		side = datav1.TradeSide_TRADE_SIDE_SELL
 	}
 	// Parse the trade date into a proto Date.
@@ -135,24 +136,23 @@ func csvTradeToProto(csvTrade *ibkractivitycsv.Trade) (*datav1.Trade, error) {
 	// Generate a deterministic trade ID from the composite key since CSVs don't have one.
 	tradeID := generateTradeID(csvTrade.Symbol, csvTrade.DateTime, csvTrade.Quantity, csvTrade.TradePrice)
 	return &datav1.Trade{
-		TradeId:        tradeID,
-		TradeDate:      protoDate,
-		SettleDate:     protoDate, // CSV doesn't have settle date, use trade date.
-		Symbol:         csvTrade.Symbol,
-		Side:           side,
-		QuantityUnits:  quantityUnits,
-		QuantityMicros: quantityMicros,
-		TradePrice:     tradePrice,
-		Proceeds:       proceeds,
-		Commission:     commission,
-		CurrencyCode:   currencyCode,
+		TradeId:      tradeID,
+		TradeDate:    protoDate,
+		SettleDate:   protoDate, // CSV doesn't have settle date, use trade date.
+		Symbol:       csvTrade.Symbol,
+		Side:         side,
+		Quantity:     quantity,
+		TradePrice:   tradePrice,
+		Proceeds:     proceeds,
+		Commission:   commission,
+		CurrencyCode: currencyCode,
 	}, nil
 }
 
 // csvPositionToProto converts an Activity Statement CSV position to a proto Position.
 func csvPositionToProto(csvPosition *ibkractivitycsv.Position) (*datav1.Position, error) {
 	currencyCode := csvPosition.CurrencyCode
-	quantityUnits, quantityMicros, err := moneypb.ParseDecimalToUnitsMicros(csvPosition.Quantity)
+	quantity, err := mathpb.NewDecimal(csvPosition.Quantity)
 	if err != nil {
 		return nil, fmt.Errorf("parsing quantity %q: %w", csvPosition.Quantity, err)
 	}
@@ -171,8 +171,7 @@ func csvPositionToProto(csvPosition *ibkractivitycsv.Position) (*datav1.Position
 	return &datav1.Position{
 		Symbol:         csvPosition.Symbol,
 		AssetCategory:  csvPosition.AssetCategory,
-		QuantityUnits:  quantityUnits,
-		QuantityMicros: quantityMicros,
+		Quantity:       quantity,
 		CostBasisPrice: costBasisPrice,
 		MarketPrice:    marketPrice,
 		MarketValue:    marketValue,
@@ -188,11 +187,10 @@ func tradeKey(trade *datav1.Trade) string {
 		return "ibkr-" + trade.GetTradeId()
 	}
 	// CSV-derived trades use composite key.
-	return fmt.Sprintf("csv-%s-%s-%d.%d-%s",
+	return fmt.Sprintf("csv-%s-%s-%s-%s",
 		trade.GetSymbol(),
 		protoDateString(trade.GetTradeDate()),
-		trade.GetQuantityUnits(),
-		trade.GetQuantityMicros(),
+		mathpb.ToString(trade.GetQuantity()),
 		moneypb.MoneyValueToString(trade.GetTradePrice()),
 	)
 }

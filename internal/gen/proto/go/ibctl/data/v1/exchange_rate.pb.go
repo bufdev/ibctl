@@ -12,6 +12,7 @@ package datav1
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
+	v11 "github.com/bufdev/ibctl/internal/gen/proto/go/standard/math/v1"
 	v1 "github.com/bufdev/ibctl/internal/gen/proto/go/standard/time/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -36,13 +37,10 @@ type ExchangeRate struct {
 	BaseCurrencyCode string `protobuf:"bytes,2,opt,name=base_currency_code,json=baseCurrencyCode,proto3" json:"base_currency_code,omitempty"`
 	// The quote currency code (e.g., "CAD").
 	QuoteCurrencyCode string `protobuf:"bytes,3,opt,name=quote_currency_code,json=quoteCurrencyCode,proto3" json:"quote_currency_code,omitempty"`
-	// The whole units of the exchange rate (e.g., 1 for a rate of 1.3456).
-	RateUnits int64 `protobuf:"varint,4,opt,name=rate_units,json=rateUnits,proto3" json:"rate_units,omitempty"`
-	// The micro units of the exchange rate (e.g., 345600 for a rate of 1.3456).
-	// Must be between -999999 and 999999. Sign must match rate_units.
-	RateMicros int64 `protobuf:"varint,5,opt,name=rate_micros,json=rateMicros,proto3" json:"rate_micros,omitempty"`
+	// The exchange rate as a decimal value.
+	Rate *v11.Decimal `protobuf:"bytes,4,opt,name=rate,proto3" json:"rate,omitempty"`
 	// The source of the exchange rate data (e.g., "ibkr", "frankfurter").
-	Provider      string `protobuf:"bytes,6,opt,name=provider,proto3" json:"provider,omitempty"`
+	Provider      string `protobuf:"bytes,5,opt,name=provider,proto3" json:"provider,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -98,18 +96,11 @@ func (x *ExchangeRate) GetQuoteCurrencyCode() string {
 	return ""
 }
 
-func (x *ExchangeRate) GetRateUnits() int64 {
+func (x *ExchangeRate) GetRate() *v11.Decimal {
 	if x != nil {
-		return x.RateUnits
+		return x.Rate
 	}
-	return 0
-}
-
-func (x *ExchangeRate) GetRateMicros() int64 {
-	if x != nil {
-		return x.RateMicros
-	}
-	return 0
+	return nil
 }
 
 func (x *ExchangeRate) GetProvider() string {
@@ -123,18 +114,15 @@ var File_ibctl_data_v1_exchange_rate_proto protoreflect.FileDescriptor
 
 const file_ibctl_data_v1_exchange_rate_proto_rawDesc = "" +
 	"\n" +
-	"!ibctl/data/v1/exchange_rate.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bstandard/time/v1/date.proto\"\xc0\x02\n" +
+	"!ibctl/data/v1/exchange_rate.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1estandard/math/v1/decimal.proto\x1a\x1bstandard/time/v1/date.proto\"\xa1\x02\n" +
 	"\fExchangeRate\x122\n" +
 	"\x04date\x18\x01 \x01(\v2\x16.standard.time.v1.DateB\x06\xbaH\x03\xc8\x01\x01R\x04date\x12?\n" +
 	"\x12base_currency_code\x18\x02 \x01(\tB\x11\xbaH\x0er\f2\n" +
 	"^[A-Z]{3}$R\x10baseCurrencyCode\x12A\n" +
 	"\x13quote_currency_code\x18\x03 \x01(\tB\x11\xbaH\x0er\f2\n" +
-	"^[A-Z]{3}$R\x11quoteCurrencyCode\x12\x1d\n" +
-	"\n" +
-	"rate_units\x18\x04 \x01(\x03R\trateUnits\x125\n" +
-	"\vrate_micros\x18\x05 \x01(\x03B\x14\xbaH\x11\"\x0f\x18\xbf\x84=(\xc1\xfb\xc2\xff\xff\xff\xff\xff\xff\x01R\n" +
-	"rateMicros\x12\"\n" +
-	"\bprovider\x18\x06 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\bproviderB\xc0\x01\n" +
+	"^[A-Z]{3}$R\x11quoteCurrencyCode\x125\n" +
+	"\x04rate\x18\x04 \x01(\v2\x19.standard.math.v1.DecimalB\x06\xbaH\x03\xc8\x01\x01R\x04rate\x12\"\n" +
+	"\bprovider\x18\x05 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\bproviderB\xc0\x01\n" +
 	"\x11com.ibctl.data.v1B\x11ExchangeRateProtoP\x01ZBgithub.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1;datav1\xa2\x02\x03IDX\xaa\x02\rIbctl.Data.V1\xca\x02\rIbctl\\Data\\V1\xe2\x02\x19Ibctl\\Data\\V1\\GPBMetadata\xea\x02\x0fIbctl::Data::V1b\x06proto3"
 
 var (
@@ -153,14 +141,16 @@ var file_ibctl_data_v1_exchange_rate_proto_msgTypes = make([]protoimpl.MessageIn
 var file_ibctl_data_v1_exchange_rate_proto_goTypes = []any{
 	(*ExchangeRate)(nil), // 0: ibctl.data.v1.ExchangeRate
 	(*v1.Date)(nil),      // 1: standard.time.v1.Date
+	(*v11.Decimal)(nil),  // 2: standard.math.v1.Decimal
 }
 var file_ibctl_data_v1_exchange_rate_proto_depIdxs = []int32{
 	1, // 0: ibctl.data.v1.ExchangeRate.date:type_name -> standard.time.v1.Date
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	2, // 1: ibctl.data.v1.ExchangeRate.rate:type_name -> standard.math.v1.Decimal
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_ibctl_data_v1_exchange_rate_proto_init() }
