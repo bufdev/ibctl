@@ -41,10 +41,11 @@ type MergedData struct {
 // Merge reads Activity Statement CSVs and Flex Query cached data for all accounts,
 // deduplicates trades, and returns the merged result.
 // The dataDirV1Path is the versioned data directory containing per-account subdirectories.
+// The activityStatementsDirPath is the directory containing per-account CSV subdirectories.
 // The accountAliases map contains alias → account ID mappings from config.
 func Merge(
-	csvStatements []*ibkractivitycsv.ActivityStatement,
 	dataDirV1Path string,
+	activityStatementsDirPath string,
 	accountAliases map[string]string,
 ) (*MergedData, error) {
 	tradeMap := make(map[string]*datav1.Trade)
@@ -52,65 +53,62 @@ func Merge(
 	var allTransfers []*datav1.Transfer
 	var allTradeTransfers []*datav1.TradeTransfer
 	var allCorporateActions []*datav1.CorporateAction
-	// Load Flex Query cached data per account.
+	// Process each account: load Flex Query cache + Activity Statement CSVs.
 	for alias := range accountAliases {
+		// Load Flex Query cached data for this account.
 		accountDir := filepath.Join(dataDirV1Path, alias)
-		// Read trades for this account.
 		tradesPath := filepath.Join(accountDir, "trades.json")
 		cachedTrades, err := protoio.ReadMessagesJSON(tradesPath, func() *datav1.Trade { return &datav1.Trade{} })
 		if err == nil {
 			for _, trade := range cachedTrades {
-				key := tradeKey(trade)
-				tradeMap[key] = trade
+				tradeMap[tradeKey(trade)] = trade
 			}
 		}
-		// Read positions for this account.
 		positionsPath := filepath.Join(accountDir, "positions.json")
 		positions, err := protoio.ReadMessagesJSON(positionsPath, func() *datav1.Position { return &datav1.Position{} })
 		if err == nil {
 			allPositions = append(allPositions, positions...)
 		}
-		// Read transfers for this account.
 		transfersPath := filepath.Join(accountDir, "transfers.json")
 		transfers, err := protoio.ReadMessagesJSON(transfersPath, func() *datav1.Transfer { return &datav1.Transfer{} })
 		if err == nil {
 			allTransfers = append(allTransfers, transfers...)
 		}
-		// Read trade transfers for this account.
 		tradeTransfersPath := filepath.Join(accountDir, "trade_transfers.json")
 		tradeTransfers, err := protoio.ReadMessagesJSON(tradeTransfersPath, func() *datav1.TradeTransfer { return &datav1.TradeTransfer{} })
 		if err == nil {
 			allTradeTransfers = append(allTradeTransfers, tradeTransfers...)
 		}
-		// Read corporate actions for this account.
 		corporateActionsPath := filepath.Join(accountDir, "corporate_actions.json")
 		corporateActions, err := protoio.ReadMessagesJSON(corporateActionsPath, func() *datav1.CorporateAction { return &datav1.CorporateAction{} })
 		if err == nil {
 			allCorporateActions = append(allCorporateActions, corporateActions...)
 		}
-	}
-	// Merge in Activity Statement CSV trades on top — CSV data takes precedence
-	// over Flex Query data since the user manages the CSVs directly.
-	var csvPositions []*datav1.Position
-	for _, statement := range csvStatements {
-		for i := range statement.Trades {
-			// CSV trades don't have account IDs — they'll need to be mapped
-			// via the activity_statements_dir subdirectory structure.
-			trade, err := csvTradeToProto(&statement.Trades[i])
-			if err != nil {
-				continue // Skip unparseable trades.
-			}
-			// CSV trades overwrite Flex Query trades with the same key.
-			key := tradeKey(trade)
-			tradeMap[key] = trade
+		// Load Activity Statement CSVs for this account from the matching subdirectory.
+		// CSV data takes precedence over Flex Query data.
+		csvDir := filepath.Join(activityStatementsDirPath, alias)
+		csvStatements, err := ibkractivitycsv.ParseDirectory(csvDir)
+		if err != nil {
+			// No CSV directory for this account — skip (not an error).
+			continue
 		}
-		// Accumulate positions from CSVs (latest wins by overwrite).
-		for i := range statement.Positions {
-			pos, err := csvPositionToProto(&statement.Positions[i])
-			if err != nil {
-				continue
+		for _, statement := range csvStatements {
+			for i := range statement.Trades {
+				trade, err := csvTradeToProto(&statement.Trades[i], alias)
+				if err != nil {
+					continue
+				}
+				// CSV trades overwrite Flex Query trades with the same key.
+				tradeMap[tradeKey(trade)] = trade
 			}
-			csvPositions = append(csvPositions, pos)
+			// CSV positions overwrite Flex Query positions for this account.
+			for i := range statement.Positions {
+				pos, err := csvPositionToProto(&statement.Positions[i], alias)
+				if err != nil {
+					continue
+				}
+				allPositions = append(allPositions, pos)
+			}
 		}
 	}
 	// Collect and sort trades for deterministic output.
@@ -126,15 +124,9 @@ func Merge(
 		}
 		return trades[i].GetTradeId() < trades[j].GetTradeId()
 	})
-	// Merge positions: use CSV positions for accounts that have them, otherwise use Flex Query.
-	// If CSV positions exist, they take precedence.
-	positions := allPositions
-	if len(csvPositions) > 0 {
-		positions = csvPositions
-	}
 	return &MergedData{
 		Trades:           trades,
-		Positions:        positions,
+		Positions:        allPositions,
 		Transfers:        allTransfers,
 		TradeTransfers:   allTradeTransfers,
 		CorporateActions: allCorporateActions,
@@ -142,7 +134,8 @@ func Merge(
 }
 
 // csvTradeToProto converts an Activity Statement CSV trade to a proto Trade.
-func csvTradeToProto(csvTrade *ibkractivitycsv.Trade) (*datav1.Trade, error) {
+// The accountAlias is derived from the CSV subdirectory name.
+func csvTradeToProto(csvTrade *ibkractivitycsv.Trade, accountAlias string) (*datav1.Trade, error) {
 	// Parse quantity as decimal (supports fractional shares).
 	quantity, err := mathpb.NewDecimal(csvTrade.Quantity)
 	if err != nil {
@@ -176,6 +169,7 @@ func csvTradeToProto(csvTrade *ibkractivitycsv.Trade) (*datav1.Trade, error) {
 	tradeID := generateTradeID(csvTrade.Symbol, csvTrade.DateTime, csvTrade.Quantity, csvTrade.TradePrice)
 	return &datav1.Trade{
 		TradeId:      tradeID,
+		AccountId:    accountAlias,
 		TradeDate:    protoDate,
 		SettleDate:   protoDate, // CSV doesn't have settle date, use trade date.
 		Symbol:       csvTrade.Symbol,
@@ -189,7 +183,8 @@ func csvTradeToProto(csvTrade *ibkractivitycsv.Trade) (*datav1.Trade, error) {
 }
 
 // csvPositionToProto converts an Activity Statement CSV position to a proto Position.
-func csvPositionToProto(csvPosition *ibkractivitycsv.Position) (*datav1.Position, error) {
+// The accountAlias is derived from the CSV subdirectory name.
+func csvPositionToProto(csvPosition *ibkractivitycsv.Position, accountAlias string) (*datav1.Position, error) {
 	currencyCode := csvPosition.CurrencyCode
 	quantity, err := mathpb.NewDecimal(csvPosition.Quantity)
 	if err != nil {
@@ -209,6 +204,7 @@ func csvPositionToProto(csvPosition *ibkractivitycsv.Position) (*datav1.Position
 	}
 	return &datav1.Position{
 		Symbol:         csvPosition.Symbol,
+		AccountId:      accountAlias,
 		AssetCategory:  csvPosition.AssetCategory,
 		Quantity:       quantity,
 		CostBasisPrice: costBasisPrice,

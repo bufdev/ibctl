@@ -17,7 +17,6 @@ import (
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlmerge"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctltaxlot"
 	"github.com/bufdev/ibctl/internal/pkg/cliio"
-	"github.com/bufdev/ibctl/internal/pkg/ibkractivitycsv"
 	"github.com/bufdev/ibctl/internal/pkg/mathpb"
 	"github.com/spf13/pflag"
 )
@@ -76,13 +75,8 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	if err := downloader.EnsureDownloaded(ctx); err != nil {
 		return err
 	}
-	// Read Activity Statement CSVs.
-	csvStatements, err := ibkractivitycsv.ParseDirectory(config.ActivityStatementsDirPath)
-	if err != nil {
-		return err
-	}
-	// Merge CSV seed data with Flex Query cached data across all accounts.
-	mergedData, err := ibctlmerge.Merge(csvStatements, config.DataDirV1Path, config.AccountAliases)
+	// Merge Activity Statement CSVs with Flex Query cached data across all accounts.
+	mergedData, err := ibctlmerge.Merge(config.DataDirV1Path, config.ActivityStatementsDirPath, config.AccountAliases)
 	if err != nil {
 		return err
 	}

@@ -326,10 +326,23 @@ func VerifyPositions(computed []*datav1.ComputedPosition, reported []*datav1.Pos
 }
 
 // TransfersToSyntheticTrades converts transfer records into synthetic trades
-// for FIFO processing. Transfer-in becomes a BUY, transfer-out becomes a SELL.
+// for FIFO processing. Only transfers with a non-zero transfer price are
+// converted — transfers without a price (e.g., FOP transfers from another
+// broker) are informational only and the cost basis comes from the IBKR
+// position data instead.
 func TransfersToSyntheticTrades(transfers []*datav1.Transfer) []*datav1.Trade {
 	var trades []*datav1.Trade
 	for _, transfer := range transfers {
+		// Skip transfers without a transfer price — these are informational
+		// (e.g., FOP transfers where cost basis was manually entered in IBKR's
+		// Position Transfer Basis tool and is reflected in position data).
+		if transfer.GetTransferPrice() == nil {
+			continue
+		}
+		// Skip transfers with a zero transfer price.
+		if moneypb.MoneyToMicros(transfer.GetTransferPrice()) == 0 {
+			continue
+		}
 		// Determine trade side from transfer direction.
 		var side datav1.TradeSide
 		switch transfer.GetDirection() {
@@ -348,11 +361,6 @@ func TransfersToSyntheticTrades(transfers []*datav1.Transfer) []*datav1.Trade {
 			protoDateStr(transfer.GetDate()),
 			mathpb.ToString(transfer.GetQuantity()),
 		)
-		// Use the transfer price as the trade price, default to zero if not available.
-		tradePrice := transfer.GetTransferPrice()
-		if tradePrice == nil {
-			tradePrice = moneypb.MoneyFromMicros(transfer.GetCurrencyCode(), 0)
-		}
 		trades = append(trades, &datav1.Trade{
 			TradeId:       tradeID,
 			AccountId:     transfer.GetAccountId(),
@@ -362,7 +370,7 @@ func TransfersToSyntheticTrades(transfers []*datav1.Transfer) []*datav1.Trade {
 			AssetCategory: transfer.GetAssetCategory(),
 			Side:          side,
 			Quantity:      transfer.GetQuantity(),
-			TradePrice:    tradePrice,
+			TradePrice:    transfer.GetTransferPrice(),
 			Proceeds:      moneypb.MoneyFromMicros(transfer.GetCurrencyCode(), 0),
 			Commission:    moneypb.MoneyFromMicros(transfer.GetCurrencyCode(), 0),
 			CurrencyCode:  transfer.GetCurrencyCode(),

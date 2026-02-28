@@ -85,9 +85,10 @@ func GetHoldingsOverview(
 	if err != nil {
 		return nil, err
 	}
-	// Compute per-account positions from tax lots.
+	// Compute per-account positions from tax lots for verification.
 	computedPositions := ibctltaxlot.ComputePositions(taxLotResult.TaxLots)
-	// Verify computed positions against IBKR-reported positions.
+	// Verify per-account computed positions against per-account IBKR-reported positions.
+	// This must happen before aggregation so account_id keys match.
 	discrepancies := ibctltaxlot.VerifyPositions(computedPositions, positions)
 
 	// Build a map of market prices from IBKR-reported positions, keyed by symbol.
@@ -97,7 +98,7 @@ func GetHoldingsOverview(
 		marketPrices[pos.GetSymbol()] = moneypb.MoneyValueToString(pos.GetMarketPrice())
 	}
 
-	// Aggregate computed positions across accounts for combined view.
+	// Aggregate computed positions across accounts for combined display.
 	// Group by symbol, sum quantities, weighted-average cost basis.
 	type combinedData struct {
 		quantityMicros  int64
