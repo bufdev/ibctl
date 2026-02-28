@@ -193,16 +193,19 @@ func (c *client) Download(ctx context.Context, token string, queryID string, fro
 // Retries on transient IBKR errors with exponential backoff.
 func (c *client) sendRequest(ctx context.Context, token string, queryID string, fromDate xtime.Date, toDate xtime.Date) (string, error) {
 	// Build the request URL with query parameters.
-	reqURL := fmt.Sprintf("%s?v=3&t=%s&q=%s", sendRequestURL, token, queryID)
+	// Parameter order matches IBKR docs: t, q, [fd, td], v.
+	reqURL := fmt.Sprintf("%s?t=%s&q=%s", sendRequestURL, token, queryID)
 	// Optionally append date range override parameters (IBKR expects YYYYMMDD format).
 	if !fromDate.IsZero() && !toDate.IsZero() {
 		reqURL += fmt.Sprintf("&fd=%04d%02d%02d&td=%04d%02d%02d", fromDate.Year, fromDate.Month, fromDate.Day, toDate.Year, toDate.Month, toDate.Day)
 	}
+	reqURL += "&v=3"
 	return backoff.Retry(ctx, maxAttempts, initialRetryDelay, maxRetryDelay,
 		func(ctx context.Context, attempt int) (string, bool, error) {
 			if attempt > 0 {
 				c.logger.Info("retrying send request", "attempt", attempt+1)
 			}
+			c.logger.Debug("send request", "query_id", queryID, "has_dates", !fromDate.IsZero())
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 			if err != nil {
 				return "", false, err
@@ -227,6 +230,9 @@ func (c *client) sendRequest(ctx context.Context, token string, queryID string, 
 			}
 			if sendResp.Status != "Success" {
 				retryable := retryableErrorCodes[sendResp.ErrorCode]
+				if retryable {
+					c.logger.Warn("transient IBKR error, will retry", "code", sendResp.ErrorCode, "message", sendResp.ErrorMessage)
+				}
 				return "", retryable, fmt.Errorf("%s (code: %s)", sendResp.ErrorMessage, sendResp.ErrorCode)
 			}
 			return sendResp.ReferenceCode, false, nil
@@ -243,7 +249,8 @@ func (c *client) getStatement(ctx context.Context, token string, referenceCode s
 				c.logger.Info("waiting for flex query statement", "attempt", attempt+1)
 			}
 			// Build the request URL with query parameters.
-			reqURL := fmt.Sprintf("%s?v=3&t=%s&q=%s", getStatementURL, token, referenceCode)
+			// Parameter order matches IBKR docs: t, q, v.
+			reqURL := fmt.Sprintf("%s?t=%s&q=%s&v=3", getStatementURL, token, referenceCode)
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 			if err != nil {
 				return nil, false, err
@@ -270,6 +277,9 @@ func (c *client) getStatement(ctx context.Context, token string, referenceCode s
 					return nil, false, fmt.Errorf("parsing get response: %w", err)
 				}
 				retryable := retryableErrorCodes[getResp.ErrorCode]
+				if retryable {
+					c.logger.Warn("transient IBKR error, will retry", "code", getResp.ErrorCode, "message", getResp.ErrorMessage)
+				}
 				return nil, retryable, fmt.Errorf("%s (code: %s)", getResp.ErrorMessage, getResp.ErrorCode)
 			}
 			// If it's not an error response, it's the actual statement XML.

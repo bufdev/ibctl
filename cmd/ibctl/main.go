@@ -10,9 +10,9 @@ import (
 	"buf.build/go/app/appcmd"
 	"buf.build/go/app/appext"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/config"
-	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/debug"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/download"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/holdings"
+	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/probe"
 )
 
 func main() {
@@ -34,9 +34,9 @@ Run "ibctl config init" to create a configuration file.`,
 		BindPersistentFlags: builder.BindRoot,
 		SubCommands: []*appcmd.Command{
 			config.NewCommand("config", builder),
-			debug.NewCommand("debug", builder),
 			download.NewCommand("download", builder),
 			holdings.NewCommand("holdings", builder),
+			probe.NewCommand("probe", builder),
 		},
 	}
 }

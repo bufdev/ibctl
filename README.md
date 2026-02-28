@@ -35,7 +35,7 @@ Follow these exact steps in the IBKR portal to create a Flex Query and generate 
 8. Click **Save**.
 9. Note the **Query ID** displayed next to the query name in the list. You will need this for the configuration file.
 
-**Note on trade history**: IBKR limits Flex Query periods to 365 calendar days per request. ibctl automatically makes multiple API calls with sliding date windows to capture your full account history, deduplicating trades by trade ID. The Period setting in the query is overridden by ibctl at request time.
+**Note on trade history**: IBKR limits Flex Query periods to 365 calendar days. To capture older trades, change the Period in the IBKR portal to cover a different date range and run `ibctl download` again — new trades will be merged into the existing cache, deduplicated by trade ID.
 
 ### Generate a Flex Web Service Token
 
@@ -117,7 +117,7 @@ ibctl holdings overview --format json
 ibctl download
 ```
 
-Data is downloaded automatically when commands need it. Use `ibctl download` to force a refresh. ibctl automatically fetches your full trade history by making multiple API calls in 365-day windows, going backwards until no more trades are found.
+Data is downloaded automatically when commands need it. Use `ibctl download` to force a refresh. Each download merges new data with the existing cache — trades are deduplicated by trade ID, so it is safe to run repeatedly.
 
 ## Commands
 

@@ -2,8 +2,8 @@
 //
 // All rights reserved.
 
-// Package debugprobe implements the "debug probe" command for testing API date ranges.
-package debugprobe
+// Package probe implements the "probe" command for testing API connectivity and date ranges.
+package probe
 
 import (
 	"context"
@@ -28,7 +28,7 @@ const (
 	ibkrTokenEnvVar = "IBKR_TOKEN"
 )
 
-// NewCommand returns a new debug probe command for testing API date ranges.
+// NewCommand returns a new probe command for testing API connectivity and date ranges.
 func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 	flags := newFlags()
 	return &appcmd.Command{
@@ -36,10 +36,11 @@ func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 		Short: "Probe the IBKR Flex Query API with a specific date range",
 		Long: `Probe the IBKR Flex Query API with a specific date range.
 
-Makes a single API call with the given --from and --to dates (YYYYMMDD format)
-and prints the number of trades, positions, and cash transactions returned.
-Does not write to the data cache. Useful for testing whether the API supports
-historical date ranges beyond 365 days from today.`,
+Makes a single API call and prints the number of trades, positions, and cash
+transactions returned. Does not write to the data cache.
+
+Without --from/--to, uses the query's configured period.
+With --from/--to (YYYYMMDD format), overrides the period to test specific date ranges.`,
 		Args: appcmd.NoArgs,
 		Run: builder.NewRunFunc(
 			func(ctx context.Context, container appext.Container) error {
@@ -78,17 +79,22 @@ func (f *flags) Bind(flagSet *pflag.FlagSet) {
 }
 
 func run(ctx context.Context, container appext.Container, flags *flags) error {
-	if flags.From == "" || flags.To == "" {
-		return appcmd.NewInvalidArgumentError("--from and --to are both required")
+	// Validate: either both --from/--to are set, or neither.
+	if (flags.From == "") != (flags.To == "") {
+		return appcmd.NewInvalidArgumentError("--from and --to must both be specified or both be omitted")
 	}
-	// Parse the date flags (YYYYMMDD format).
-	fromDate, err := parseYYYYMMDD(flags.From)
-	if err != nil {
-		return appcmd.NewInvalidArgumentErrorf("invalid --from date %q, expected YYYYMMDD format: %v", flags.From, err)
-	}
-	toDate, err := parseYYYYMMDD(flags.To)
-	if err != nil {
-		return appcmd.NewInvalidArgumentErrorf("invalid --to date %q, expected YYYYMMDD format: %v", flags.To, err)
+	// Parse date flags if provided (YYYYMMDD format). Zero values mean use query defaults.
+	var fromDate, toDate xtime.Date
+	if flags.From != "" {
+		var err error
+		fromDate, err = parseYYYYMMDD(flags.From)
+		if err != nil {
+			return appcmd.NewInvalidArgumentErrorf("invalid --from date %q, expected YYYYMMDD format: %v", flags.From, err)
+		}
+		toDate, err = parseYYYYMMDD(flags.To)
+		if err != nil {
+			return appcmd.NewInvalidArgumentErrorf("invalid --to date %q, expected YYYYMMDD format: %v", flags.To, err)
+		}
 	}
 	// Read config for the query ID.
 	config, err := ibctlconfig.ReadConfig(container.ConfigDirPath())

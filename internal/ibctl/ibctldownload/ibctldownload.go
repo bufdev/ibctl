@@ -4,10 +4,10 @@
 
 // Package ibctldownload provides the download orchestrator for IBKR data.
 //
-// The downloader fetches trade history by making multiple Flex Query API calls
-// with sliding 365-day date windows, going backwards from today until a window
-// returns zero trades (indicating the beginning of the account has been reached).
-// Trades are deduplicated by trade ID across windows.
+// The downloader fetches data via the IBKR Flex Query API and merges it with
+// existing cached data. Trades are deduplicated by trade ID, exchange rates by
+// date+currency pair. Downloads are idempotent — running multiple times safely
+// merges new data into the cache.
 package ibctldownload
 
 import (
@@ -32,18 +32,13 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// windowDays is the number of days per API request (IBKR's maximum).
-const windowDays = 365
-
 // Downloader is the interface for downloading and caching IBKR data.
 type Downloader interface {
-	// Download fetches IBKR data via the Flex Query API and caches it as JSON files.
-	// Makes multiple API calls in 365-day windows going backwards until no more
-	// trades are found. Always re-downloads fresh data.
+	// Download fetches IBKR data via the Flex Query API and merges it with
+	// cached data. Trades are deduplicated by trade ID, exchange rates by
+	// date+currency pair. Positions are always overwritten with the latest
+	// snapshot. Idempotent — safe to call multiple times.
 	Download(ctx context.Context) error
-	// DownloadWindow fetches a single date window and caches the results.
-	// Useful for testing whether the IBKR API supports specific historical date ranges.
-	DownloadWindow(ctx context.Context, fromDate xtime.Date, toDate xtime.Date) error
 	// EnsureDownloaded checks if cached data files exist and downloads if they don't.
 	EnsureDownloaded(ctx context.Context) error
 }
@@ -88,41 +83,25 @@ func (d *downloader) EnsureDownloaded(ctx context.Context) error {
 	return d.Download(ctx)
 }
 
-func (d *downloader) DownloadWindow(ctx context.Context, fromDate xtime.Date, toDate xtime.Date) error {
-	// Create the data directory if needed.
-	if err := os.MkdirAll(d.dataDirV1Path, 0o755); err != nil {
-		return fmt.Errorf("creating data directory: %w", err)
-	}
-	// Make a single API call for the specified date range.
-	d.logger.Info("downloading single window", "from", fromDate.String(), "to", toDate.String())
-	statement, err := d.flexQueryClient.Download(ctx, d.ibkrToken, d.config.IBKRQueryID, fromDate, toDate)
-	if err != nil {
-		return fmt.Errorf("downloading window (%s to %s): %w", fromDate.String(), toDate.String(), err)
-	}
-	d.logger.Info("window downloaded",
-		"trades", len(statement.Trades),
-		"positions", len(statement.OpenPositions),
-		"cash_transactions", len(statement.CashTransactions),
-	)
-	// Convert and write results using the same pipeline as Download.
-	return d.processAndWrite(ctx, statement.Trades, statement.OpenPositions, statement.CashTransactions)
-}
-
 func (d *downloader) Download(ctx context.Context) error {
 	// Create the data directory if needed.
 	if err := os.MkdirAll(d.dataDirV1Path, 0o755); err != nil {
 		return fmt.Errorf("creating data directory: %w", err)
 	}
-	d.logger.Info("data directory ready", "path", d.dataDirV1Path)
-
-	// Fetch data across multiple 365-day windows going backwards in time.
-	allXMLTrades, xmlPositions, allXMLCashTransactions, err := d.downloadAllWindows(ctx)
+	d.logger.Info("downloading flex query data")
+	// Fetch data using the query's configured period (single API call).
+	var zeroDate xtime.Date
+	statement, err := d.flexQueryClient.Download(ctx, d.ibkrToken, d.config.IBKRQueryID, zeroDate, zeroDate)
 	if err != nil {
-		return err
+		return fmt.Errorf("downloading flex query: %w", err)
 	}
-
-	// Process and write all data files.
-	return d.processAndWrite(ctx, allXMLTrades, xmlPositions, allXMLCashTransactions)
+	d.logger.Info("flex query data downloaded",
+		"trades", len(statement.Trades),
+		"positions", len(statement.OpenPositions),
+		"cash_transactions", len(statement.CashTransactions),
+	)
+	// Merge with cached data and write all files.
+	return d.processAndWrite(ctx, statement.Trades, statement.OpenPositions, statement.CashTransactions)
 }
 
 // processAndWrite converts XML data to protos, merges with existing cached data,
@@ -306,68 +285,6 @@ func exchangeRateDateString(rate *datav1.ExchangeRate) string {
 		return fmt.Sprintf("%04d-%02d-%02d", d.GetYear(), d.GetMonth(), d.GetDay())
 	}
 	return ""
-}
-
-// downloadAllWindows fetches data across multiple 365-day windows going backwards
-// in time. Trades and cash transactions are accumulated and deduplicated across
-// all windows. Positions are taken from the most recent window only (they are a
-// point-in-time snapshot). The loop terminates when a window returns zero trades,
-// indicating the beginning of the account has been reached.
-func (d *downloader) downloadAllWindows(ctx context.Context) (
-	[]ibkrflexquery.XMLTrade,
-	[]ibkrflexquery.XMLPosition,
-	[]ibkrflexquery.XMLCashTransaction,
-	error,
-) {
-	// Deduplicate trades by trade ID across windows.
-	seenTradeIDs := make(map[string]bool)
-	var allTrades []ibkrflexquery.XMLTrade
-	var allCashTransactions []ibkrflexquery.XMLCashTransaction
-	// Positions from the most recent window only (point-in-time snapshot).
-	var positions []ibkrflexquery.XMLPosition
-
-	today := xtime.TimeToDate(time.Now())
-	for window := range 100 { // Safety limit to prevent infinite loops.
-		// Compute the date range for this window using xtime.Date arithmetic.
-		toDate := today.AddDays(-window * windowDays)
-		fromDate := toDate.AddDays(-(windowDays - 1))
-
-		d.logger.Info("downloading window", "window", window, "from", fromDate.String(), "to", toDate.String())
-		statement, err := d.flexQueryClient.Download(ctx, d.ibkrToken, d.config.IBKRQueryID, fromDate, toDate)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("downloading window %d (%s to %s): %w", window, fromDate.String(), toDate.String(), err)
-		}
-
-		// Positions: take from the most recent window only (window 0).
-		if window == 0 {
-			positions = statement.OpenPositions
-		}
-
-		// Accumulate trades, deduplicating by trade ID.
-		newTradeCount := 0
-		for i := range statement.Trades {
-			tradeID := statement.Trades[i].TradeID
-			if seenTradeIDs[tradeID] {
-				continue
-			}
-			seenTradeIDs[tradeID] = true
-			allTrades = append(allTrades, statement.Trades[i])
-			newTradeCount++
-		}
-
-		// Accumulate cash transactions across all windows.
-		allCashTransactions = append(allCashTransactions, statement.CashTransactions...)
-
-		d.logger.Info("window downloaded", "window", window, "new_trades", newTradeCount, "total_trades", len(allTrades))
-
-		// Termination: stop when a window returns zero trades (reached beginning of account).
-		if len(statement.Trades) == 0 {
-			d.logger.Info("no trades in window, stopping", "window", window)
-			break
-		}
-	}
-
-	return allTrades, positions, allCashTransactions, nil
 }
 
 // convertTrades converts XML trades to proto trades.
