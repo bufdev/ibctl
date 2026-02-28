@@ -13,24 +13,35 @@ Follow these exact steps in the IBKR portal to create a Flex Query and generate 
 
 ### Create a Flex Query
 
-1. Log in to [Interactive Brokers Client Portal](https://www.interactivebrokers.com/portal).
-2. Navigate to **Performance & Reports** in the top menu.
-3. Click **Flex Queries** in the left sidebar.
-4. Under **Custom Flex Queries**, click the **+** (Create) button.
-5. Set the **Query Name** to something descriptive (e.g., "ibctl").
-6. Set **Format** to **XML**.
-7. Under **Sections**, add the following three sections:
-   - **Trades**: Click **Trades**, then select all fields. Set the date range to cover your full trade history (e.g., from account opening).
-   - **Open Positions**: Click **Open Positions**, then select all fields.
-   - **Cash Transactions**: Click **Cash Transactions**, then select all fields. This is used for FX rate extraction.
-8. Click **Save** to save the query.
+1. Log in to [IBKR Account Management](https://www.interactivebrokers.com/portal).
+2. Navigate to **Performance & Reports** > **Flex Queries**.
+3. In the **Activity Flex Query** section, click the **+** button in the top right corner of the panel.
+4. Set the **Query Name** to something descriptive (e.g., "ibctl").
+5. Under **Sections**, add the following three sections, selecting all fields for each:
+   - **Trades**
+   - **Open Positions**
+   - **Cash Transactions** (used for FX rate extraction)
+6. Under **Delivery Configuration**, set:
+   - **Format**: `XML`
+   - **Period**: `Last 365 Calendar Days` (this is the maximum; see note below about older history)
+7. Under **General Configuration**, set:
+   - **Date Format**: `yyyyMMdd`
+   - **Time Format**: `HHmmss`
+   - **Date/Time Separator**: `; (semi-colon)`
+   - **Include Canceled Trades?**: `No`
+   - **Include Currency Rates?**: `Yes`
+   - **Include Audit Trail Fields?**: `No`
+   - **Breakout by Day?**: `No`
+8. Click **Save**.
 9. Note the **Query ID** displayed next to the query name in the list. You will need this for the configuration file.
+
+**Note on trade history**: IBKR limits Flex Query periods to 365 calendar days per request. ibctl automatically makes multiple API calls with sliding date windows to capture your full account history, deduplicating trades by trade ID. The Period setting in the query is overridden by ibctl at request time.
 
 ### Generate a Flex Web Service Token
 
-1. On the same **Flex Queries** page, scroll down to the **Flex Web Service** section (or look for a separate "Flex Web Service" tab).
-2. Click **Create Token** (or **Regenerate** if one already exists).
-3. Copy and save the token securely. This token is used as the `IBKR_TOKEN` environment variable.
+1. On the same **Flex Queries** page, find the **Flex Web Service Configuration** section on the right side.
+2. Click the **gear icon** to configure.
+3. Generate a token and copy it securely. This token is used as the `IBKR_TOKEN` environment variable.
 4. The token is valid for the duration shown. Regenerate it when it expires.
 
 ## File Locations
@@ -44,7 +55,7 @@ Follow these exact steps in the IBKR portal to create a Flex Query and generate 
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `IBKR_TOKEN` | Yes (for `download`) | Your IBKR Flex Web Service token. Never store this in configuration files or commit it to version control. |
+| `IBKR_TOKEN` | Yes (for `download`) | Your IBKR Flex Web Service token. This is read-only — it can only retrieve reports, not make trades or modify your account. Never store this in configuration files or commit it to version control. |
 | `IBCTL_CONFIG_DIR` | No | Override the configuration directory (default: `~/.config/ibctl`). |
 | `IBCTL_DATA_DIR` | No | Override the data directory (default: `~/.local/share/ibctl`). |
 
@@ -99,14 +110,16 @@ ibctl config validate
 # Set the IBKR token.
 export IBKR_TOKEN="your-flex-web-service-token"
 
-# Download IBKR data (trades, positions, exchange rates, tax lots).
-ibctl download
-
-# View holdings overview.
+# View holdings overview (downloads data automatically if not cached).
 ibctl holdings overview
 ibctl holdings overview --format csv
 ibctl holdings overview --format json
+
+# Force re-download of IBKR data.
+ibctl download
 ```
+
+Data is downloaded automatically when commands need it. Use `ibctl download` to force a refresh. ibctl automatically fetches your full trade history by making multiple API calls in 365-day windows, going backwards until no more trades are found.
 
 ## Commands
 
@@ -115,19 +128,19 @@ ibctl holdings overview --format json
 | `ibctl config init` | Create a new configuration file and print its path |
 | `ibctl config edit` | Edit the configuration file in `$EDITOR` |
 | `ibctl config validate` | Validate the configuration file |
-| `ibctl download` | Download and cache IBKR data via Flex Query API |
+| `ibctl download` | Force re-download and cache IBKR data via Flex Query API |
 | `ibctl holdings overview` | Display holdings with prices, positions, and classifications |
 
 ## Data Storage
 
-All data is cached as protobuf-JSON files under the data directory (`~/.local/share/ibctl/v1/` by default). Each file contains a single protobuf message serialized using `protojson` with proto field names.
+All data is cached as protobuf-JSON files under the data directory (`~/.local/share/ibctl/v1/` by default). Each file stores newline-separated proto JSON (one message per line), serialized using `protojson` with proto field names. `metadata.json` is a single message.
 
 | File | Protobuf Message | Description |
 |------|-----------------|-------------|
-| `trades.json` | `ibctl.data.v1.Trades` | All trades from the IBKR Flex Query. Each trade includes trade ID, date, symbol, buy/sell direction, quantity, price, proceeds, commission, and FIFO realized P&L. |
-| `positions.json` | `ibctl.data.v1.Positions` | Open positions as reported by IBKR, including quantity, cost basis price, market price, market value, and unrealized P&L. |
-| `tax_lots.json` | `ibctl.data.v1.TaxLots` | FIFO tax lots computed from trades. Each lot tracks symbol, open date, remaining quantity, cost basis price, and long-term status (held >= 1 year). |
-| `exchange_rates.json` | `ibctl.data.v1.ExchangeRates` | Currency exchange rates extracted from IBKR cash transactions, supplemented by [frankfurter.dev](https://frankfurter.dev) for any missing dates. |
+| `trades.json` | `ibctl.data.v1.Trade` | All trades from the IBKR Flex Query. Each trade includes trade ID, dates, symbol, side (buy/sell), quantity, price, proceeds, commission, currency code, and FIFO realized P&L. |
+| `positions.json` | `ibctl.data.v1.Position` | Open positions as reported by IBKR, including quantity, cost basis price, market price, market value, currency code, and unrealized P&L. |
+| `tax_lots.json` | `ibctl.data.v1.TaxLot` | FIFO tax lots computed from trades. Each lot tracks symbol, open date, remaining quantity, cost basis price, and currency code. Long-term status (held >= 1 year) is computed dynamically at display time. |
+| `exchange_rates.json` | `ibctl.data.v1.ExchangeRate` | Currency exchange rates with date, base/quote currency codes, rate (units + micros), and provider (ibkr or [frankfurter.dev](https://frankfurter.dev)). |
 | `metadata.json` | `ibctl.data.v1.Metadata` | Download timestamp, whether computed positions matched IBKR-reported positions, and any verification discrepancy notes. |
 
-Monetary values use `standard.money.v1.Money` with units and micros (6 decimal places). Dates use `standard.time.v1.Date` with year, month, and day fields.
+Monetary values use `standard.money.v1.Money` with units and micros (6 decimal places). Dates use `standard.time.v1.Date` with year, month, and day fields. Timestamps use `google.protobuf.Timestamp`.

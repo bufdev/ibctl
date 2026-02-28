@@ -3,6 +3,11 @@
 // All rights reserved.
 
 // Package ibctldownload provides the download orchestrator for IBKR data.
+//
+// The downloader fetches trade history by making multiple Flex Query API calls
+// with sliding 365-day date windows, going backwards from today until a window
+// returns zero trades (indicating the beginning of the account has been reached).
+// Trades are deduplicated by trade ID across windows.
 package ibctldownload
 
 import (
@@ -23,13 +28,20 @@ import (
 	"github.com/bufdev/ibctl/internal/pkg/moneypb"
 	"github.com/bufdev/ibctl/internal/pkg/protoio"
 	"github.com/bufdev/ibctl/internal/pkg/timepb"
+	"github.com/bufdev/ibctl/internal/standard/xtime"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// windowDays is the number of days per API request (IBKR's maximum).
+const windowDays = 365
 
 // Downloader is the interface for downloading and caching IBKR data.
 type Downloader interface {
 	// Download fetches IBKR data via the Flex Query API and caches it as JSON files.
+	// Always re-downloads fresh data.
 	Download(ctx context.Context) error
+	// EnsureDownloaded checks if cached data files exist and downloads if they don't.
+	EnsureDownloaded(ctx context.Context) error
 }
 
 // NewDownloader creates a new Downloader with all required dependencies.
@@ -62,70 +74,72 @@ type downloader struct {
 	fxRateClient    frankfurter.Client
 }
 
+func (d *downloader) EnsureDownloaded(ctx context.Context) error {
+	// Check if the minimum required data files exist.
+	tradesPath := filepath.Join(d.dataDirV1Path, "trades.json")
+	positionsPath := filepath.Join(d.dataDirV1Path, "positions.json")
+	if fileExists(tradesPath) && fileExists(positionsPath) {
+		return nil
+	}
+	return d.Download(ctx)
+}
+
 func (d *downloader) Download(ctx context.Context) error {
 	// Step 1: Create the data directory if needed.
-	dataDirV1 := d.dataDirV1Path
-	if err := os.MkdirAll(dataDirV1, 0o755); err != nil {
+	if err := os.MkdirAll(d.dataDirV1Path, 0o755); err != nil {
 		return fmt.Errorf("creating data directory: %w", err)
 	}
-	d.logger.Info("data directory ready", "path", dataDirV1)
+	d.logger.Info("data directory ready", "path", d.dataDirV1Path)
 
-	// Step 2: Fetch and parse the Flex Query statement.
-	d.logger.Info("downloading flex query data")
-	statement, err := d.flexQueryClient.Download(ctx, d.ibkrToken, d.config.IBKRQueryID)
-	if err != nil {
-		return fmt.Errorf("downloading flex query: %w", err)
-	}
-	d.logger.Info("flex query data downloaded")
-
-	// Step 3: Convert XML trades to proto and write trades.json (newline-separated).
-	trades, err := d.convertTrades(statement.Trades)
+	// Step 2: Fetch data across multiple 365-day windows going backwards in time.
+	// The most recent window also provides the current positions snapshot.
+	allXMLTrades, positions, allXMLCashTransactions, err := d.downloadAllWindows(ctx)
 	if err != nil {
 		return err
 	}
-	tradesPath := filepath.Join(dataDirV1, "trades.json")
+
+	// Step 3: Convert XML trades to proto and write trades.json.
+	trades, err := d.convertTrades(allXMLTrades)
+	if err != nil {
+		return err
+	}
+	tradesPath := filepath.Join(d.dataDirV1Path, "trades.json")
 	if err := protoio.WriteMessagesJSON(tradesPath, trades); err != nil {
 		return fmt.Errorf("writing trades: %w", err)
 	}
 	d.logger.Info("trades written", "count", len(trades), "path", tradesPath)
 
-	// Step 4: Convert XML positions to proto and write positions.json (newline-separated).
-	positions, err := d.convertPositions(statement.OpenPositions)
-	if err != nil {
-		return err
-	}
-	positionsPath := filepath.Join(dataDirV1, "positions.json")
+	// Step 4: Write positions.json (from most recent window only).
+	positionsPath := filepath.Join(d.dataDirV1Path, "positions.json")
 	if err := protoio.WriteMessagesJSON(positionsPath, positions); err != nil {
 		return fmt.Errorf("writing positions: %w", err)
 	}
 	d.logger.Info("positions written", "count", len(positions), "path", positionsPath)
 
-	// Step 5: Extract FX rates from cash transactions and write exchange_rates.json (newline-separated).
-	exchangeRates := d.extractExchangeRates(statement.CashTransactions)
+	// Step 5: Extract FX rates from cash transactions and write exchange_rates.json.
+	exchangeRates := d.extractExchangeRates(allXMLCashTransactions)
 	if err := d.fetchMissingExchangeRates(ctx, exchangeRates, trades); err != nil {
 		d.logger.Warn("failed to fetch missing exchange rates", "error", err)
 	}
-	exchangeRatesPath := filepath.Join(dataDirV1, "exchange_rates.json")
+	exchangeRatesPath := filepath.Join(d.dataDirV1Path, "exchange_rates.json")
 	if err := protoio.WriteMessagesJSON(exchangeRatesPath, exchangeRates); err != nil {
 		return fmt.Errorf("writing exchange rates: %w", err)
 	}
 	d.logger.Info("exchange rates written", "count", len(exchangeRates), "path", exchangeRatesPath)
 
-	// Step 6: Compute tax lots and write tax_lots.json (newline-separated).
+	// Step 6: Compute tax lots and write tax_lots.json.
 	taxLots, err := ibctltaxlot.ComputeTaxLots(trades)
 	if err != nil {
 		return fmt.Errorf("computing tax lots: %w", err)
 	}
-	taxLotsPath := filepath.Join(dataDirV1, "tax_lots.json")
+	taxLotsPath := filepath.Join(d.dataDirV1Path, "tax_lots.json")
 	if err := protoio.WriteMessagesJSON(taxLotsPath, taxLots); err != nil {
 		return fmt.Errorf("writing tax lots: %w", err)
 	}
 	d.logger.Info("tax lots written", "count", len(taxLots), "path", taxLotsPath)
 
-	// Step 7: Compute positions from tax lots.
+	// Step 7: Compute positions from tax lots and verify against IBKR-reported positions.
 	computedPositions := ibctltaxlot.ComputePositions(taxLots)
-
-	// Step 8: Verify computed vs IBKR-reported positions.
 	verificationNotes := ibctltaxlot.VerifyPositions(computedPositions, positions)
 	positionsVerified := len(verificationNotes) == 0
 	if !positionsVerified {
@@ -136,18 +150,83 @@ func (d *downloader) Download(ctx context.Context) error {
 		d.logger.Info("all positions verified successfully")
 	}
 
-	// Step 9: Write metadata.json.
+	// Step 8: Write metadata.json.
 	metadata := &datav1.Metadata{
 		DownloadTime:      timestamppb.Now(),
 		PositionsVerified: positionsVerified,
 		VerificationNotes: verificationNotes,
 	}
-	metadataPath := filepath.Join(dataDirV1, "metadata.json")
+	metadataPath := filepath.Join(d.dataDirV1Path, "metadata.json")
 	if err := protoio.WriteMessageJSON(metadataPath, metadata); err != nil {
 		return fmt.Errorf("writing metadata: %w", err)
 	}
 	d.logger.Info("download complete", "positions_verified", positionsVerified)
 	return nil
+}
+
+// downloadAllWindows fetches data across multiple 365-day windows going backwards
+// in time. Trades and cash transactions are accumulated and deduplicated across
+// all windows. Positions are taken from the most recent window only (they are a
+// point-in-time snapshot). The loop terminates when a window returns zero trades,
+// indicating the beginning of the account has been reached.
+func (d *downloader) downloadAllWindows(ctx context.Context) (
+	[]ibkrflexquery.XMLTrade,
+	[]*datav1.Position,
+	[]ibkrflexquery.XMLCashTransaction,
+	error,
+) {
+	// Deduplicate trades by trade ID across windows.
+	seenTradeIDs := make(map[string]bool)
+	var allTrades []ibkrflexquery.XMLTrade
+	var allCashTransactions []ibkrflexquery.XMLCashTransaction
+	var positions []*datav1.Position
+
+	today := xtime.TimeToDate(time.Now())
+	for window := range 100 { // Safety limit to prevent infinite loops.
+		// Compute the date range for this window using xtime.Date arithmetic.
+		toDate := today.AddDays(-window * windowDays)
+		fromDate := toDate.AddDays(-(windowDays - 1))
+
+		d.logger.Info("downloading window", "window", window, "from", fromDate.String(), "to", toDate.String())
+		statement, err := d.flexQueryClient.Download(ctx, d.ibkrToken, d.config.IBKRQueryID, fromDate, toDate)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("downloading window %d (%s to %s): %w", window, fromDate.String(), toDate.String(), err)
+		}
+
+		// Positions: take from the most recent window only (window 0).
+		if window == 0 {
+			convertedPositions, err := d.convertPositions(statement.OpenPositions)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			positions = convertedPositions
+		}
+
+		// Accumulate trades, deduplicating by trade ID.
+		newTradeCount := 0
+		for i := range statement.Trades {
+			tradeID := statement.Trades[i].TradeID
+			if seenTradeIDs[tradeID] {
+				continue
+			}
+			seenTradeIDs[tradeID] = true
+			allTrades = append(allTrades, statement.Trades[i])
+			newTradeCount++
+		}
+
+		// Accumulate cash transactions across all windows.
+		allCashTransactions = append(allCashTransactions, statement.CashTransactions...)
+
+		d.logger.Info("window downloaded", "window", window, "new_trades", newTradeCount, "total_trades", len(allTrades))
+
+		// Termination: stop when a window returns zero trades (reached beginning of account).
+		if len(statement.Trades) == 0 {
+			d.logger.Info("no trades in window, stopping", "window", window)
+			break
+		}
+	}
+
+	return allTrades, positions, allCashTransactions, nil
 }
 
 // convertTrades converts XML trades to proto trades.
@@ -427,4 +506,10 @@ func parseTradeSide(s string) datav1.TradeSide {
 // parseIBKRDate parses an IBKR date string in YYYYMMDD format.
 func parseIBKRDate(s string) (time.Time, error) {
 	return time.Parse("20060102", s)
+}
+
+// fileExists checks if a file exists at the given path.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

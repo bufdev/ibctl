@@ -19,12 +19,15 @@ package ibkrflexquery
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/bufdev/ibctl/internal/standard/xtime"
 )
 
 const (
@@ -46,10 +49,13 @@ type Client interface {
 	//
 	// The token is the Flex Web Service token generated in the IBKR portal.
 	// The queryID identifies which Flex Query to execute.
+	// The fromDate and toDate optionally override the query's configured period.
+	// Pass zero-value dates to use the query's default period.
+	// If one is set, both must be set. Each request is limited to 365 days.
 	//
 	// The method performs the two-step API flow (SendRequest → GetStatement),
 	// parses the XML response, and returns the structured statement data.
-	Download(ctx context.Context, token string, queryID string) (*FlexStatement, error)
+	Download(ctx context.Context, token string, queryID string, fromDate xtime.Date, toDate xtime.Date) (*FlexStatement, error)
 }
 
 // NewClient creates a new Flex Query API client. The logger is required.
@@ -142,9 +148,20 @@ type sendResponse struct {
 	ErrorMessage  string   `xml:"ErrorMessage"`
 }
 
-func (c *client) Download(ctx context.Context, token string, queryID string) (*FlexStatement, error) {
+func (c *client) Download(ctx context.Context, token string, queryID string, fromDate xtime.Date, toDate xtime.Date) (*FlexStatement, error) {
+	// Validate required parameters.
+	if token == "" {
+		return nil, errors.New("token is required")
+	}
+	if queryID == "" {
+		return nil, errors.New("query ID is required")
+	}
+	// Validate date parameters: if one is set, both must be set.
+	if fromDate.IsZero() != toDate.IsZero() {
+		return nil, errors.New("fromDate and toDate must both be set or both be zero")
+	}
 	// Step 1: Send the request to get a reference code.
-	referenceCode, err := c.sendRequest(ctx, token, queryID)
+	referenceCode, err := c.sendRequest(ctx, token, queryID, fromDate, toDate)
 	if err != nil {
 		return nil, fmt.Errorf("sending flex query request: %w", err)
 	}
@@ -163,9 +180,13 @@ func (c *client) Download(ctx context.Context, token string, queryID string) (*F
 }
 
 // sendRequest initiates a Flex Query and returns the reference code.
-func (c *client) sendRequest(ctx context.Context, token string, queryID string) (string, error) {
+func (c *client) sendRequest(ctx context.Context, token string, queryID string, fromDate xtime.Date, toDate xtime.Date) (string, error) {
 	// Build the request URL with query parameters.
 	reqURL := fmt.Sprintf("%s?v=3&t=%s&q=%s", sendRequestURL, token, queryID)
+	// Optionally append date range override parameters (IBKR expects YYYYMMDD format).
+	if !fromDate.IsZero() && !toDate.IsZero() {
+		reqURL += fmt.Sprintf("&fd=%04d%02d%02d&td=%04d%02d%02d", fromDate.Year, fromDate.Month, fromDate.Day, toDate.Year, toDate.Month, toDate.Day)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return "", err

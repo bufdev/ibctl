@@ -11,6 +11,7 @@ import (
 
 	"buf.build/go/app/appcmd"
 	"buf.build/go/app/appext"
+	"github.com/bufdev/ibctl/cmd/ibctl/internal/ibctlcmd"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlholdings"
 	"github.com/bufdev/ibctl/internal/pkg/cliio"
@@ -55,12 +56,20 @@ func (f *flags) Bind(flagSet *pflag.FlagSet) {
 	)
 }
 
-func run(_ context.Context, container appext.Container, flags *flags) error {
+func run(ctx context.Context, container appext.Container, flags *flags) error {
 	format, err := cliio.ParseFormat(flags.Format)
 	if err != nil {
 		return appcmd.NewInvalidArgumentError(err.Error())
 	}
-	// Read and validate the configuration file.
+	// Ensure data has been downloaded (implicitly downloads if missing).
+	downloader, err := ibctlcmd.NewDownloader(container)
+	if err != nil {
+		return err
+	}
+	if err := downloader.EnsureDownloaded(ctx); err != nil {
+		return err
+	}
+	// Read config for symbol classifications.
 	config, err := ibctlconfig.ReadConfig(container.ConfigDirPath())
 	if err != nil {
 		return err

@@ -154,7 +154,11 @@ func ReadConfig(configDirPath string) (*Config, error) {
 	if err := unmarshalYAMLStrict(data, &externalConfig); err != nil {
 		return nil, fmt.Errorf("parsing config file %s: %w", filePath, err)
 	}
-	return NewConfig(externalConfig)
+	config, err := NewConfig(externalConfig)
+	if err != nil {
+		return nil, fmt.Errorf("invalid configuration in %s: %w", filePath, err)
+	}
+	return config, nil
 }
 
 // InitConfig creates a new configuration file with a documented template.
