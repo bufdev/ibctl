@@ -9,8 +9,9 @@
 //  2. GetStatement: Polls with the reference code until the XML statement is ready.
 //
 // Both endpoints require a Flex Web Service token for authentication and
-// a "Java" User-Agent header. The GetStatement endpoint may return a "not ready"
-// response (error code 1019), in which case the client retries with a delay.
+// a "Java" User-Agent header. Both endpoints may return transient errors
+// (e.g., 1001 server busy, 1019 statement generating) which are retried
+// with exponential backoff.
 //
 // The returned FlexStatement contains three sections: Trades, OpenPositions,
 // and CashTransactions, each parsed from the IBKR XML attribute-based format.
@@ -27,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bufdev/ibctl/internal/pkg/backoff"
 	"github.com/bufdev/ibctl/internal/standard/xtime"
 )
 
@@ -37,10 +39,12 @@ const (
 	getStatementURL = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/GetStatement"
 	// userAgent is the required User-Agent header for IBKR (IBKR expects "Java").
 	userAgent = "Java"
-	// maxRetries is the maximum number of polling attempts for GetStatement.
-	maxRetries = 10
-	// retryDelay is the delay between GetStatement polling attempts.
-	retryDelay = 5 * time.Second
+	// maxAttempts is the maximum number of attempts for each API call.
+	maxAttempts = 10
+	// initialRetryDelay is the initial delay before the first retry.
+	initialRetryDelay = 2 * time.Second
+	// maxRetryDelay is the maximum delay between retries.
+	maxRetryDelay = 30 * time.Second
 )
 
 // Client is the interface for downloading Flex Query data from IBKR.
@@ -148,6 +152,12 @@ type sendResponse struct {
 	ErrorMessage  string   `xml:"ErrorMessage"`
 }
 
+// retryableErrorCodes are IBKR error codes that indicate a transient failure.
+var retryableErrorCodes = map[string]bool{
+	"1001": true, // Statement could not be generated at this time.
+	"1019": true, // Statement is being generated, please try again shortly.
+}
+
 func (c *client) Download(ctx context.Context, token string, queryID string, fromDate xtime.Date, toDate xtime.Date) (*FlexStatement, error) {
 	// Validate required parameters.
 	if token == "" {
@@ -160,13 +170,13 @@ func (c *client) Download(ctx context.Context, token string, queryID string, fro
 	if fromDate.IsZero() != toDate.IsZero() {
 		return nil, errors.New("fromDate and toDate must both be set or both be zero")
 	}
-	// Step 1: Send the request to get a reference code.
+	// Step 1: Send the request to get a reference code, with backoff on transient errors.
 	referenceCode, err := c.sendRequest(ctx, token, queryID, fromDate, toDate)
 	if err != nil {
 		return nil, fmt.Errorf("sending flex query request: %w", err)
 	}
 	c.logger.Info("flex query request sent", "reference_code", referenceCode)
-	// Step 2: Poll for the statement XML using the reference code.
+	// Step 2: Poll for the statement XML using the reference code, with backoff.
 	xmlData, err := c.getStatement(ctx, token, referenceCode)
 	if err != nil {
 		return nil, fmt.Errorf("getting flex query statement: %w", err)
@@ -180,6 +190,7 @@ func (c *client) Download(ctx context.Context, token string, queryID string, fro
 }
 
 // sendRequest initiates a Flex Query and returns the reference code.
+// Retries on transient IBKR errors with exponential backoff.
 func (c *client) sendRequest(ctx context.Context, token string, queryID string, fromDate xtime.Date, toDate xtime.Date) (string, error) {
 	// Build the request URL with query parameters.
 	reqURL := fmt.Sprintf("%s?v=3&t=%s&q=%s", sendRequestURL, token, queryID)
@@ -187,82 +198,84 @@ func (c *client) sendRequest(ctx context.Context, token string, queryID string, 
 	if !fromDate.IsZero() && !toDate.IsZero() {
 		reqURL += fmt.Sprintf("&fd=%04d%02d%02d&td=%04d%02d%02d", fromDate.Year, fromDate.Month, fromDate.Day, toDate.Year, toDate.Month, toDate.Day)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return "", err
-	}
-	// IBKR requires the "Java" User-Agent header.
-	req.Header.Set("User-Agent", userAgent)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
-	}
-	var sendResp sendResponse
-	if err := xml.Unmarshal(body, &sendResp); err != nil {
-		return "", fmt.Errorf("parsing send response: %w", err)
-	}
-	if sendResp.Status != "Success" {
-		return "", fmt.Errorf("flex query request failed: %s (code: %s)", sendResp.ErrorMessage, sendResp.ErrorCode)
-	}
-	return sendResp.ReferenceCode, nil
+	return backoff.Retry(ctx, maxAttempts, initialRetryDelay, maxRetryDelay,
+		func(ctx context.Context, attempt int) (string, bool, error) {
+			if attempt > 0 {
+				c.logger.Info("retrying send request", "attempt", attempt+1)
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+			if err != nil {
+				return "", false, err
+			}
+			// IBKR requires the "Java" User-Agent header.
+			req.Header.Set("User-Agent", userAgent)
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return "", false, err
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return "", false, err
+			}
+			if resp.StatusCode != http.StatusOK {
+				return "", false, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+			}
+			var sendResp sendResponse
+			if err := xml.Unmarshal(body, &sendResp); err != nil {
+				return "", false, fmt.Errorf("parsing send response: %w", err)
+			}
+			if sendResp.Status != "Success" {
+				retryable := retryableErrorCodes[sendResp.ErrorCode]
+				return "", retryable, fmt.Errorf("%s (code: %s)", sendResp.ErrorMessage, sendResp.ErrorCode)
+			}
+			return sendResp.ReferenceCode, false, nil
+		},
+	)
 }
 
 // getStatement polls the GetStatement endpoint until the data is ready.
+// Retries on transient IBKR errors with exponential backoff.
 func (c *client) getStatement(ctx context.Context, token string, referenceCode string) ([]byte, error) {
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			c.logger.Info("waiting for flex query statement", "attempt", attempt+1)
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(retryDelay):
+	return backoff.Retry(ctx, maxAttempts, initialRetryDelay, maxRetryDelay,
+		func(ctx context.Context, attempt int) ([]byte, bool, error) {
+			if attempt > 0 {
+				c.logger.Info("waiting for flex query statement", "attempt", attempt+1)
 			}
-		}
-		// Build the request URL with query parameters.
-		reqURL := fmt.Sprintf("%s?v=3&t=%s&q=%s", getStatementURL, token, referenceCode)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-		if err != nil {
-			return nil, err
-		}
-		// IBKR requires the "Java" User-Agent header.
-		req.Header.Set("User-Agent", userAgent)
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
-		}
-		// Check if the response is an XML error response (statement not ready yet).
-		bodyStr := strings.TrimSpace(string(body))
-		if strings.HasPrefix(bodyStr, "<FlexStatementResponse") {
-			var getResp sendResponse
-			if err := xml.Unmarshal(body, &getResp); err != nil {
-				return nil, fmt.Errorf("parsing get response: %w", err)
+			// Build the request URL with query parameters.
+			reqURL := fmt.Sprintf("%s?v=3&t=%s&q=%s", getStatementURL, token, referenceCode)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+			if err != nil {
+				return nil, false, err
 			}
-			// Error code 1019 means the statement is being generated, retry.
-			if getResp.ErrorCode == "1019" {
-				continue
+			// IBKR requires the "Java" User-Agent header.
+			req.Header.Set("User-Agent", userAgent)
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return nil, false, err
 			}
-			return nil, fmt.Errorf("flex query statement failed: %s (code: %s)", getResp.ErrorMessage, getResp.ErrorCode)
-		}
-		// If it's not an error response, it's the actual statement XML.
-		return body, nil
-	}
-	return nil, fmt.Errorf("flex query statement not ready after %d attempts", maxRetries)
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				return nil, false, err
+			}
+			if resp.StatusCode != http.StatusOK {
+				return nil, false, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+			}
+			// Check if the response is an XML error response (statement not ready yet).
+			bodyStr := strings.TrimSpace(string(body))
+			if strings.HasPrefix(bodyStr, "<FlexStatementResponse") {
+				var getResp sendResponse
+				if err := xml.Unmarshal(body, &getResp); err != nil {
+					return nil, false, fmt.Errorf("parsing get response: %w", err)
+				}
+				retryable := retryableErrorCodes[getResp.ErrorCode]
+				return nil, retryable, fmt.Errorf("%s (code: %s)", getResp.ErrorMessage, getResp.ErrorCode)
+			}
+			// If it's not an error response, it's the actual statement XML.
+			return body, false, nil
+		},
+	)
 }
 
 // parseFlexQueryResponse parses the raw XML data into a flexQueryResponse.

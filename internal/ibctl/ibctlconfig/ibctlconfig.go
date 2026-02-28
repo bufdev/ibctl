@@ -27,18 +27,14 @@ const configTemplate = `# The configuration file version.
 #
 # Required. The only current valid version is v1.
 version: v1
-# IBKR Flex Query configuration.
+# The Flex Query ID (visible next to your query name in the IBKR portal).
 #
 # Required. Create a Flex Query at https://www.interactivebrokers.com
 # under Performance & Reports > Flex Queries. Include the Trades,
 # Open Positions, and Cash Transactions sections with all fields enabled.
 #
 # The Flex Web Service token must be set via the IBKR_TOKEN environment variable.
-ibkr:
-  # The Flex Query ID (visible next to your query name in the IBKR portal).
-  #
-  # Required.
-  query_id: ""
+query_id: ""
 # Symbol classification configuration.
 #
 # Optional. Adds category, type, and sector metadata to holdings output.
@@ -53,16 +49,10 @@ ibkr:
 type ExternalConfig struct {
 	// Version is the configuration file version (must be "v1").
 	Version string `yaml:"version"`
-	// IBKR holds the Interactive Brokers Flex Query configuration.
-	IBKR ExternalIBKRConfig `yaml:"ibkr"`
-	// Symbols is the optional list of symbol classifications.
-	Symbols []ExternalSymbolConfig `yaml:"symbols"`
-}
-
-// ExternalIBKRConfig holds IBKR-specific configuration.
-type ExternalIBKRConfig struct {
 	// QueryID is the Flex Query ID.
 	QueryID string `yaml:"query_id"`
+	// Symbols is the optional list of symbol classifications.
+	Symbols []ExternalSymbolConfig `yaml:"symbols"`
 }
 
 // ExternalSymbolConfig holds classification metadata for a symbol.
@@ -105,8 +95,8 @@ func NewConfig(externalConfig ExternalConfig) (*Config, error) {
 	if externalConfig.Version != "v1" {
 		return nil, fmt.Errorf("unsupported config version %q, must be v1", externalConfig.Version)
 	}
-	if externalConfig.IBKR.QueryID == "" {
-		return nil, errors.New("ibkr.query_id is required")
+	if externalConfig.QueryID == "" {
+		return nil, errors.New("query_id is required")
 	}
 	// Build symbol configs map, checking for duplicates.
 	symbolConfigs := make(map[string]SymbolConfig, len(externalConfig.Symbols))
@@ -124,7 +114,7 @@ func NewConfig(externalConfig ExternalConfig) (*Config, error) {
 		}
 	}
 	return &Config{
-		IBKRQueryID:   externalConfig.IBKR.QueryID,
+		IBKRQueryID:   externalConfig.QueryID,
 		SymbolConfigs: symbolConfigs,
 	}, nil
 }

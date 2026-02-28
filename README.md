@@ -82,10 +82,8 @@ Opens the configuration file in `$EDITOR`. Creates the file with a documented te
 ```yaml
 # The configuration file version (required, must be v1).
 version: v1
-# IBKR Flex Query configuration (required).
-ibkr:
-  # The Flex Query ID (required, visible next to your query in IBKR portal).
-  query_id: "123456"
+# The Flex Query ID (required, visible next to your query in IBKR portal).
+query_id: "123456"
 # Optional symbol classifications for holdings output.
 symbols:
   - name: AAPL
