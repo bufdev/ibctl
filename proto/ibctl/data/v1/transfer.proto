@@ -1,0 +1,86 @@
+// Copyright 2026 Peter Edge
+//
+// All rights reserved.
+
+syntax = "proto3";
+
+package ibctl.data.v1;
+
+import "buf/validate/validate.proto";
+import "standard/math/v1/decimal.proto";
+import "standard/money/v1/money.proto";
+import "standard/time/v1/date.proto";
+
+// TransferType indicates the mechanism of a position transfer.
+enum TransferType {
+  TRANSFER_TYPE_UNSPECIFIED = 0;
+  TRANSFER_TYPE_ACATS = 1;
+  TRANSFER_TYPE_ATON = 2;
+  TRANSFER_TYPE_FOP = 3;
+  TRANSFER_TYPE_INTERNAL = 4;
+}
+
+// TransferDirection indicates whether a transfer is inbound or outbound.
+enum TransferDirection {
+  TRANSFER_DIRECTION_UNSPECIFIED = 0;
+  TRANSFER_DIRECTION_IN = 1;
+  TRANSFER_DIRECTION_OUT = 2;
+}
+
+// Transfer represents a position transfer (ACATS, ATON, FOP, or internal).
+message Transfer {
+  option (buf.validate.message).cel = {
+    id: "transfer_price_currency"
+    message: "transfer_price currency_code must match transfer currency_code"
+    expression: "!has(this.transfer_price) || this.transfer_price.currency_code == this.currency_code"
+  };
+
+  // The account alias this transfer belongs to (e.g., "rrsp", "holdco").
+  string account_id = 1 [(buf.validate.field).required = true];
+  // The type of transfer mechanism.
+  TransferType type = 2 [(buf.validate.field).enum.not_in = 0];
+  // Whether the transfer is inbound or outbound.
+  TransferDirection direction = 3 [(buf.validate.field).enum.not_in = 0];
+  // The ticker symbol.
+  string symbol = 4 [(buf.validate.field).required = true];
+  // The date of the transfer.
+  standard.time.v1.Date date = 5 [(buf.validate.field).required = true];
+  // The quantity transferred.
+  standard.math.v1.Decimal quantity = 6 [(buf.validate.field).required = true];
+  // The price at transfer.
+  standard.money.v1.Money transfer_price = 7;
+  // The three-letter ISO 4217 currency code.
+  string currency_code = 8 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
+  // The description from IBKR.
+  string description = 9;
+  // The asset category (e.g., "STK").
+  string asset_category = 10;
+}
+
+// TradeTransfer represents a transferred trade with its original cost basis.
+// Used to preserve holding period and cost basis for positions transferred
+// from another broker via ACATS.
+message TradeTransfer {
+  // The account alias this trade transfer belongs to (e.g., "rrsp", "holdco").
+  string account_id = 1 [(buf.validate.field).required = true];
+  // The ticker symbol.
+  string symbol = 2 [(buf.validate.field).required = true];
+  // The date the trade transfer was processed.
+  standard.time.v1.Date date = 3 [(buf.validate.field).required = true];
+  // The quantity transferred.
+  standard.math.v1.Decimal quantity = 4 [(buf.validate.field).required = true];
+  // The original trade price from the source account.
+  standard.money.v1.Money orig_trade_price = 5;
+  // The original trade date (for holding period preservation).
+  standard.time.v1.Date orig_trade_date = 6;
+  // The cost basis.
+  standard.money.v1.Money cost = 7;
+  // The original trade ID from the source account.
+  string orig_trade_id = 8;
+  // The holding period start date (may differ from orig_trade_date).
+  standard.time.v1.Date holding_period_date = 9;
+  // The three-letter ISO 4217 currency code.
+  string currency_code = 10 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
+  // The asset category (e.g., "STK").
+  string asset_category = 11;
+}

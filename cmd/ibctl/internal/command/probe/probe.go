@@ -103,19 +103,33 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	logger := container.Logger()
 	client := ibkrflexquery.NewClient(logger)
 	logger.Info("probing API", "from", fromDate.String(), "to", toDate.String(), "query_id", config.IBKRFlexQueryID)
-	statement, err := client.Download(ctx, ibkrToken, config.IBKRFlexQueryID, fromDate, toDate)
+	statements, err := client.Download(ctx, ibkrToken, config.IBKRFlexQueryID, fromDate, toDate)
 	if err != nil {
 		return fmt.Errorf("probe failed: %w", err)
 	}
-	// Print results to stdout.
-	_, err = fmt.Fprintf(
-		container.Stdout(),
-		"trades: %d\npositions: %d\ncash_transactions: %d\n",
-		len(statement.Trades),
-		len(statement.OpenPositions),
-		len(statement.CashTransactions),
-	)
-	return err
+	// Print per-account results to stdout.
+	for _, statement := range statements {
+		// Look up the account alias if available.
+		alias := statement.AccountId
+		if configAlias, ok := config.AccountIDToAlias[statement.AccountId]; ok {
+			alias = configAlias
+		}
+		_, err = fmt.Fprintf(
+			container.Stdout(),
+			"account: %s\n  trades: %d\n  positions: %d\n  cash_transactions: %d\n  transfers: %d\n  trade_transfers: %d\n  corporate_actions: %d\n",
+			alias,
+			len(statement.Trades),
+			len(statement.OpenPositions),
+			len(statement.CashTransactions),
+			len(statement.Transfers),
+			len(statement.TradeTransfers),
+			len(statement.CorporateActions),
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // parseYYYYMMDD parses a date string in YYYYMMDD format into an xtime.Date.

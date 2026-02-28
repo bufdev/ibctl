@@ -109,8 +109,10 @@ type Trade struct {
 	CurrencyCode string `protobuf:"bytes,12,opt,name=currency_code,json=currencyCode,proto3" json:"currency_code,omitempty"`
 	// The realized P&L computed by IBKR using FIFO.
 	FifoPnlRealized *v12.Money `protobuf:"bytes,13,opt,name=fifo_pnl_realized,json=fifoPnlRealized,proto3" json:"fifo_pnl_realized,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// The account alias this trade belongs to (e.g., "rrsp", "holdco").
+	AccountId     string `protobuf:"bytes,14,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Trade) Reset() {
@@ -234,11 +236,18 @@ func (x *Trade) GetFifoPnlRealized() *v12.Money {
 	return nil
 }
 
+func (x *Trade) GetAccountId() string {
+	if x != nil {
+		return x.AccountId
+	}
+	return ""
+}
+
 var File_ibctl_data_v1_trade_proto protoreflect.FileDescriptor
 
 const file_ibctl_data_v1_trade_proto_rawDesc = "" +
 	"\n" +
-	"\x19ibctl/data/v1/trade.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1estandard/math/v1/decimal.proto\x1a\x1dstandard/money/v1/money.proto\x1a\x1bstandard/time/v1/date.proto\"\xa3\n" +
+	"\x19ibctl/data/v1/trade.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1estandard/math/v1/decimal.proto\x1a\x1dstandard/money/v1/money.proto\x1a\x1bstandard/time/v1/date.proto\"\xca\n" +
 	"\n" +
 	"\x05Trade\x12!\n" +
 	"\btrade_id\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\atradeId\x12=\n" +
@@ -260,7 +269,9 @@ const file_ibctl_data_v1_trade_proto_rawDesc = "" +
 	"commission\x126\n" +
 	"\rcurrency_code\x18\f \x01(\tB\x11\xbaH\x0er\f2\n" +
 	"^[A-Z]{3}$R\fcurrencyCode\x12D\n" +
-	"\x11fifo_pnl_realized\x18\r \x01(\v2\x18.standard.money.v1.MoneyR\x0ffifoPnlRealized:\xcd\x04\xbaH\xc9\x04\x1a\x86\x01\n" +
+	"\x11fifo_pnl_realized\x18\r \x01(\v2\x18.standard.money.v1.MoneyR\x0ffifoPnlRealized\x12%\n" +
+	"\n" +
+	"account_id\x18\x0e \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\taccountId:\xcd\x04\xbaH\xc9\x04\x1a\x86\x01\n" +
 	"\x14trade_price_currency\x128trade_price currency_code must match trade currency_code\x1a4this.trade_price.currency_code == this.currency_code\x1a}\n" +
 	"\x11proceeds_currency\x125proceeds currency_code must match trade currency_code\x1a1this.proceeds.currency_code == this.currency_code\x1a\x83\x01\n" +
 	"\x13commission_currency\x127commission currency_code must match trade currency_code\x1a3this.commission.currency_code == this.currency_code\x1a\xb8\x01\n" +

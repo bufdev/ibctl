@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/bufdev/ibctl/internal/standard/xos"
 	"gopkg.in/yaml.v3"
@@ -18,6 +19,9 @@ import (
 
 // DefaultConfigFileName is the default configuration file name in the current directory.
 const DefaultConfigFileName = "ibctl.yaml"
+
+// validAliasPattern matches lowercase alphanumeric strings with hyphens, used for account aliases.
+var validAliasPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // configTemplate is the default configuration file template with comments.
 // yaml.v3 does not preserve comments, so we hardcode the template string.
@@ -37,6 +41,13 @@ data_dir: ~/Documents/ibctl
 #
 # The Flex Web Service token must be set via the IBKR_FLEX_WEB_SERVICE_TOKEN environment variable.
 flex_query_id: ""
+# Account aliases mapping.
+#
+# Required. Maps user-chosen aliases to IBKR account IDs.
+# Account numbers are confidential — aliases are used in output and directory names.
+# Aliases must be lowercase alphanumeric with hyphens (e.g., "rrsp", "hold-co").
+accounts:
+  # my-account: "U1234567"
 # Directory containing IBKR Activity Statement CSVs for historical data.
 #
 # Required. Organize by account subdirectory (e.g., ~/Documents/ibkr-statements/my-account/).
@@ -62,6 +73,8 @@ type ExternalConfigV1 struct {
 	FlexQueryID string `yaml:"flex_query_id"`
 	// ActivityStatementsDir is the directory containing IBKR Activity Statement CSVs.
 	ActivityStatementsDir string `yaml:"activity_statements_dir"`
+	// Accounts maps user-chosen aliases to IBKR account IDs.
+	Accounts map[string]string `yaml:"accounts"`
 	// Symbols is the optional list of symbol classifications.
 	Symbols []ExternalSymbolConfigV1 `yaml:"symbols"`
 }
@@ -86,12 +99,16 @@ type Config struct {
 	//
 	// To create a Flex Query, log in to IBKR Client Portal, navigate to
 	// Performance & Reports > Flex Queries, and create a new query with
-	// Trades, Open Positions, and Cash Transactions sections enabled.
+	// Trades, Open Positions, Cash Transactions, Transfers, Trade Transfers,
+	// and Corporate Actions sections enabled.
 	// The Query ID is displayed next to the query name in the list.
 	IBKRFlexQueryID string
 	// ActivityStatementsDirPath is the resolved path to the Activity Statements directory.
-	// Empty if not configured.
 	ActivityStatementsDirPath string
+	// AccountAliases maps account aliases to IBKR account IDs (e.g., "rrsp" → "U1234567").
+	AccountAliases map[string]string
+	// AccountIDToAlias maps IBKR account IDs to aliases (e.g., "U1234567" → "rrsp").
+	AccountIDToAlias map[string]string
 	// SymbolConfigs maps ticker symbols to their classification metadata.
 	SymbolConfigs map[string]SymbolConfig
 }
@@ -119,6 +136,25 @@ func NewConfigV1(externalConfig ExternalConfigV1) (*Config, error) {
 	}
 	if externalConfig.ActivityStatementsDir == "" {
 		return nil, errors.New("activity_statements_dir is required")
+	}
+	if len(externalConfig.Accounts) == 0 {
+		return nil, errors.New("accounts is required, must have at least one account alias mapping")
+	}
+	// Build account mappings, validating aliases and checking for duplicates.
+	accountAliases := make(map[string]string, len(externalConfig.Accounts))
+	accountIDToAlias := make(map[string]string, len(externalConfig.Accounts))
+	for alias, accountID := range externalConfig.Accounts {
+		if !validAliasPattern.MatchString(alias) {
+			return nil, fmt.Errorf("account alias %q is invalid, must be lowercase alphanumeric with hyphens", alias)
+		}
+		if accountID == "" {
+			return nil, fmt.Errorf("account ID for alias %q is required", alias)
+		}
+		if existingAlias, ok := accountIDToAlias[accountID]; ok {
+			return nil, fmt.Errorf("duplicate account ID %q used by aliases %q and %q", accountID, existingAlias, alias)
+		}
+		accountAliases[alias] = accountID
+		accountIDToAlias[accountID] = alias
 	}
 	// Resolve the data directory path and compute the v1 subdirectory.
 	dataDirPath, err := xos.ExpandHome(externalConfig.DataDir)
@@ -150,6 +186,8 @@ func NewConfigV1(externalConfig ExternalConfigV1) (*Config, error) {
 		DataDirV1Path:             dataDirV1Path,
 		IBKRFlexQueryID:           externalConfig.FlexQueryID,
 		ActivityStatementsDirPath: activityStatementsDirPath,
+		AccountAliases:            accountAliases,
+		AccountIDToAlias:          accountIDToAlias,
 		SymbolConfigs:             symbolConfigs,
 	}, nil
 }

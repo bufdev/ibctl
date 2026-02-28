@@ -1,0 +1,48 @@
+// Copyright 2026 Peter Edge
+//
+// All rights reserved.
+
+syntax = "proto3";
+
+package ibctl.data.v1;
+
+import "buf/validate/validate.proto";
+import "standard/math/v1/decimal.proto";
+import "standard/money/v1/money.proto";
+import "standard/time/v1/date.proto";
+
+// CorporateActionType indicates the kind of corporate action.
+enum CorporateActionType {
+  CORPORATE_ACTION_TYPE_UNSPECIFIED = 0;
+  // Forward stock split (e.g., 4-for-1).
+  CORPORATE_ACTION_TYPE_FORWARD_SPLIT = 1;
+  // Reverse stock split (e.g., 1-for-10).
+  CORPORATE_ACTION_TYPE_REVERSE_SPLIT = 2;
+  // Merger, tender offer, or symbol change.
+  CORPORATE_ACTION_TYPE_MERGER = 3;
+  // Spinoff (new symbol created from existing position).
+  CORPORATE_ACTION_TYPE_SPINOFF = 4;
+}
+
+// CorporateAction represents a corporate action event that affects
+// position quantities and/or cost basis.
+message CorporateAction {
+  // The account alias this corporate action belongs to (e.g., "rrsp", "holdco").
+  string account_id = 1 [(buf.validate.field).required = true];
+  // The type of corporate action.
+  CorporateActionType type = 2 [(buf.validate.field).enum.not_in = 0];
+  // The date of the corporate action.
+  standard.time.v1.Date date = 3 [(buf.validate.field).required = true];
+  // The ticker symbol.
+  string symbol = 4 [(buf.validate.field).required = true];
+  // The quantity change (positive for additions, negative for reductions).
+  standard.math.v1.Decimal quantity = 5 [(buf.validate.field).required = true];
+  // The monetary amount (if applicable, e.g., cash component of a merger).
+  standard.money.v1.Money amount = 6;
+  // The three-letter ISO 4217 currency code.
+  string currency_code = 7 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
+  // The IBKR action description (contains split ratio, merger terms, etc.).
+  string action_description = 8;
+  // The asset category (e.g., "STK").
+  string asset_category = 9;
+}

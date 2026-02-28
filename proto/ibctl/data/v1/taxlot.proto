@@ -30,6 +30,8 @@ message TaxLot {
   // The three-letter ISO 4217 currency code for this tax lot.
   // The cost_basis_price Money field must use this same currency code.
   string currency_code = 5 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
+  // The account alias this tax lot belongs to (e.g., "rrsp", "holdco").
+  string account_id = 6 [(buf.validate.field).required = true];
 }
 
 // ComputedPosition represents a position derived from tax lots.
@@ -49,4 +51,6 @@ message ComputedPosition {
   // The three-letter ISO 4217 currency code for this position.
   // The average_cost_basis_price Money field must use this same currency code.
   string currency_code = 4 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
+  // The account alias this position belongs to (e.g., "rrsp", "holdco").
+  string account_id = 5 [(buf.validate.field).required = true];
 }

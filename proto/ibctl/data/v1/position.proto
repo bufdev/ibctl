@@ -52,4 +52,6 @@ message Position {
   // The three-letter ISO 4217 currency code for this position.
   // All Money fields must use this same currency code.
   string currency_code = 9 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
+  // The account alias this position belongs to (e.g., "rrsp", "holdco").
+  string account_id = 10 [(buf.validate.field).required = true];
 }

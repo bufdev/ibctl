@@ -13,8 +13,9 @@
 // (e.g., 1001 server busy, 1019 statement generating) which are retried
 // with exponential backoff.
 //
-// The returned FlexStatement contains three sections: Trades, OpenPositions,
-// and CashTransactions, each parsed from the IBKR XML attribute-based format.
+// The response contains one FlexStatement per IBKR account. Each statement
+// includes Trades, OpenPositions, CashTransactions, Transfers, TradeTransfers,
+// and CorporateActions sections, parsed from the IBKR XML attribute-based format.
 package ibkrflexquery
 
 import (
@@ -58,8 +59,8 @@ type Client interface {
 	// If one is set, both must be set. Each request is limited to 365 days.
 	//
 	// The method performs the two-step API flow (SendRequest → GetStatement),
-	// parses the XML response, and returns the structured statement data.
-	Download(ctx context.Context, token string, queryID string, fromDate xtime.Date, toDate xtime.Date) (*FlexStatement, error)
+	// parses the XML response, and returns one FlexStatement per IBKR account.
+	Download(ctx context.Context, token string, queryID string, fromDate xtime.Date, toDate xtime.Date) ([]FlexStatement, error)
 }
 
 // NewClient creates a new Flex Query API client. The logger is required.
@@ -70,15 +71,22 @@ func NewClient(logger *slog.Logger) Client {
 	}
 }
 
-// FlexStatement contains the trades, positions, and cash transactions
-// returned by a Flex Query.
+// FlexStatement contains the data returned by a Flex Query for a single IBKR account.
 type FlexStatement struct {
+	// AccountId is the IBKR account identifier (e.g., "U1234567").
+	AccountId string `xml:"accountId,attr"`
 	// Trades is the list of trade executions.
 	Trades []XMLTrade `xml:"Trades>Trade"`
 	// OpenPositions is the list of currently open positions.
 	OpenPositions []XMLPosition `xml:"OpenPositions>OpenPosition"`
 	// CashTransactions is the list of cash transactions (used for FX rate extraction).
 	CashTransactions []XMLCashTransaction `xml:"CashTransactions>CashTransaction"`
+	// Transfers is the list of position transfers (ACATS, ATON, FOP, internal).
+	Transfers []XMLTransfer `xml:"Transfers>Transfer"`
+	// TradeTransfers is the list of transferred trade cost basis records.
+	TradeTransfers []XMLTradeTransfer `xml:"TradeTransfers>TradeTransfer"`
+	// CorporateActions is the list of corporate action events.
+	CorporateActions []XMLCorporateAction `xml:"CorporateActions>CorporateAction"`
 }
 
 // XMLTrade represents a trade in the IBKR Flex Query XML format.
@@ -124,6 +132,48 @@ type XMLCashTransaction struct {
 	Description  string `xml:"description,attr"`
 }
 
+// XMLTransfer represents a position transfer in the IBKR Flex Query XML format.
+// Captures ACATS, ATON, FOP, and internal transfers.
+type XMLTransfer struct {
+	Type          string `xml:"type,attr"`
+	Direction     string `xml:"direction,attr"`
+	Symbol        string `xml:"symbol,attr"`
+	DateTime      string `xml:"dateTime,attr"`
+	Quantity      string `xml:"quantity,attr"`
+	TransferPrice string `xml:"transferPrice,attr"`
+	Currency      string `xml:"currency,attr"`
+	Description   string `xml:"description,attr"`
+	AssetCategory string `xml:"assetCategory,attr"`
+}
+
+// XMLTradeTransfer represents a transferred trade cost basis in the IBKR Flex Query XML format.
+// Used to preserve holding period and cost basis for positions transferred from another broker.
+type XMLTradeTransfer struct {
+	Symbol                string `xml:"symbol,attr"`
+	DateTime              string `xml:"dateTime,attr"`
+	Quantity              string `xml:"quantity,attr"`
+	OrigTradePrice        string `xml:"origTradePrice,attr"`
+	OrigTradeDate         string `xml:"origTradeDate,attr"`
+	OrigTradeID           string `xml:"origTradeID,attr"`
+	Cost                  string `xml:"cost,attr"`
+	HoldingPeriodDateTime string `xml:"holdingPeriodDateTime,attr"`
+	Currency              string `xml:"currency,attr"`
+	AssetCategory         string `xml:"assetCategory,attr"`
+}
+
+// XMLCorporateAction represents a corporate action in the IBKR Flex Query XML format.
+// Covers stock splits, reverse splits, mergers, spinoffs, and other events.
+type XMLCorporateAction struct {
+	Type              string `xml:"type,attr"`
+	Symbol            string `xml:"symbol,attr"`
+	DateTime          string `xml:"dateTime,attr"`
+	Quantity          string `xml:"quantity,attr"`
+	Amount            string `xml:"amount,attr"`
+	Currency          string `xml:"currency,attr"`
+	ActionDescription string `xml:"actionDescription,attr"`
+	AssetCategory     string `xml:"assetCategory,attr"`
+}
+
 // *** PRIVATE ***
 
 type client struct {
@@ -137,9 +187,10 @@ type flexQueryResponse struct {
 	FlexStatements flexStatements `xml:"FlexStatements"`
 }
 
-// flexStatements contains one or more FlexStatement elements.
+// flexStatements contains one FlexStatement per IBKR account.
 type flexStatements struct {
-	FlexStatement FlexStatement `xml:"FlexStatement"`
+	// Statements is the list of per-account statements.
+	Statements []FlexStatement `xml:"FlexStatement"`
 }
 
 // sendResponse is the XML response from the SendRequest endpoint.
@@ -158,7 +209,7 @@ var retryableErrorCodes = map[string]bool{
 	"1019": true, // Statement is being generated, please try again shortly.
 }
 
-func (c *client) Download(ctx context.Context, token string, queryID string, fromDate xtime.Date, toDate xtime.Date) (*FlexStatement, error) {
+func (c *client) Download(ctx context.Context, token string, queryID string, fromDate xtime.Date, toDate xtime.Date) ([]FlexStatement, error) {
 	// Validate required parameters.
 	if token == "" {
 		return nil, errors.New("token is required")
@@ -186,7 +237,8 @@ func (c *client) Download(ctx context.Context, token string, queryID string, fro
 	if err != nil {
 		return nil, fmt.Errorf("parsing flex query response: %w", err)
 	}
-	return &response.FlexStatements.FlexStatement, nil
+	// Return all per-account statements.
+	return response.FlexStatements.Statements, nil
 }
 
 // sendRequest initiates a Flex Query and returns the reference code.

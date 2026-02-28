@@ -68,4 +68,6 @@ message Trade {
   string currency_code = 12 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
   // The realized P&L computed by IBKR using FIFO.
   standard.money.v1.Money fifo_pnl_realized = 13;
+  // The account alias this trade belongs to (e.g., "rrsp", "holdco").
+  string account_id = 14 [(buf.validate.field).required = true];
 }

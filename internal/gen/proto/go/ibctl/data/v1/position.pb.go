@@ -49,7 +49,9 @@ type Position struct {
 	FifoPnlUnrealized *v11.Money `protobuf:"bytes,8,opt,name=fifo_pnl_unrealized,json=fifoPnlUnrealized,proto3" json:"fifo_pnl_unrealized,omitempty"`
 	// The three-letter ISO 4217 currency code for this position.
 	// All Money fields must use this same currency code.
-	CurrencyCode  string `protobuf:"bytes,9,opt,name=currency_code,json=currencyCode,proto3" json:"currency_code,omitempty"`
+	CurrencyCode string `protobuf:"bytes,9,opt,name=currency_code,json=currencyCode,proto3" json:"currency_code,omitempty"`
+	// The account alias this position belongs to (e.g., "rrsp", "holdco").
+	AccountId     string `protobuf:"bytes,10,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -147,11 +149,18 @@ func (x *Position) GetCurrencyCode() string {
 	return ""
 }
 
+func (x *Position) GetAccountId() string {
+	if x != nil {
+		return x.AccountId
+	}
+	return ""
+}
+
 var File_ibctl_data_v1_position_proto protoreflect.FileDescriptor
 
 const file_ibctl_data_v1_position_proto_rawDesc = "" +
 	"\n" +
-	"\x1cibctl/data/v1/position.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1estandard/math/v1/decimal.proto\x1a\x1dstandard/money/v1/money.proto\"\x98\t\n" +
+	"\x1cibctl/data/v1/position.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1estandard/math/v1/decimal.proto\x1a\x1dstandard/money/v1/money.proto\"\xbf\t\n" +
 	"\bPosition\x12\x1e\n" +
 	"\x06symbol\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x06symbol\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12-\n" +
@@ -162,7 +171,10 @@ const file_ibctl_data_v1_position_proto_rawDesc = "" +
 	"\fmarket_value\x18\a \x01(\v2\x18.standard.money.v1.MoneyB\x06\xbaH\x03\xc8\x01\x01R\vmarketValue\x12H\n" +
 	"\x13fifo_pnl_unrealized\x18\b \x01(\v2\x18.standard.money.v1.MoneyR\x11fifoPnlUnrealized\x126\n" +
 	"\rcurrency_code\x18\t \x01(\tB\x11\xbaH\x0er\f2\n" +
-	"^[A-Z]{3}$R\fcurrencyCode:\x83\x05\xbaH\xff\x04\x1a\x98\x01\n" +
+	"^[A-Z]{3}$R\fcurrencyCode\x12%\n" +
+	"\n" +
+	"account_id\x18\n" +
+	" \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\taccountId:\x83\x05\xbaH\xff\x04\x1a\x98\x01\n" +
 	"\x19cost_basis_price_currency\x12@cost_basis_price currency_code must match position currency_code\x1a9this.cost_basis_price.currency_code == this.currency_code\x1a\x8c\x01\n" +
 	"\x15market_price_currency\x12<market_price currency_code must match position currency_code\x1a5this.market_price.currency_code == this.currency_code\x1a\x8c\x01\n" +
 	"\x15market_value_currency\x12<market_value currency_code must match position currency_code\x1a5this.market_value.currency_code == this.currency_code\x1a\xc3\x01\n" +
