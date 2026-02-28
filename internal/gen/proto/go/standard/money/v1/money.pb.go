@@ -99,9 +99,10 @@ var File_standard_money_v1_money_proto protoreflect.FileDescriptor
 
 const file_standard_money_v1_money_proto_rawDesc = "" +
 	"\n" +
-	"\x1dstandard/money/v1/money.proto\x12\x11standard.money.v1\x1a\x1bbuf/validate/validate.proto\"\xdd\x02\n" +
-	"\x05Money\x12-\n" +
-	"\rcurrency_code\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x98\x01\x03R\fcurrencyCode\x12\x14\n" +
+	"\x1dstandard/money/v1/money.proto\x12\x11standard.money.v1\x1a\x1bbuf/validate/validate.proto\"\xe6\x02\n" +
+	"\x05Money\x126\n" +
+	"\rcurrency_code\x18\x01 \x01(\tB\x11\xbaH\x0er\f2\n" +
+	"^[A-Z]{3}$R\fcurrencyCode\x12\x14\n" +
 	"\x05units\x18\x02 \x01(\x03R\x05units\x12,\n" +
 	"\x06micros\x18\x03 \x01(\x03B\x14\xbaH\x11\"\x0f\x18\xbf\x84=(\xc1\xfb\xc2\xff\xff\xff\xff\xff\xff\x01R\x06micros:\xe0\x01\xbaH\xdc\x01\x1al\n" +
 	"\x0fmicros_positive\x124micros must be positive or zero if units is positive\x1a#this.units <= 0 || this.micros >= 0\x1al\n" +

@@ -2,8 +2,8 @@
 //
 // All rights reserved.
 
-// Package fxrate provides a client for fetching exchange rates from frankfurter.dev.
-package fxrate
+// Package frankfurter provides a client for fetching exchange rates from frankfurter.dev.
+package frankfurter
 
 import (
 	"context"
@@ -17,31 +17,20 @@ import (
 const baseURL = "https://api.frankfurter.dev/v1"
 
 // Client is the interface for fetching exchange rates.
+//
+// The frankfurter.dev API is free and does not require an API key or authentication.
+// See https://frankfurter.dev for usage details and rate limits.
 type Client interface {
 	// GetRates fetches exchange rates for a date range.
 	// Returns a map of date strings (YYYY-MM-DD) to rate strings.
 	GetRates(ctx context.Context, baseCurrency string, quoteCurrency string, startDate string, endDate string) (map[string]string, error)
 }
 
-// ClientOption is a functional option for configuring the Client.
-type ClientOption func(*client)
-
-// ClientWithHTTPClient sets the HTTP client to use for requests.
-func ClientWithHTTPClient(httpClient *http.Client) ClientOption {
-	return func(c *client) {
-		c.httpClient = httpClient
-	}
-}
-
-// NewClient creates a new exchange rate client with the given options.
-func NewClient(options ...ClientOption) Client {
-	c := &client{
+// NewClient creates a new exchange rate client.
+func NewClient() Client {
+	return &client{
 		httpClient: http.DefaultClient,
 	}
-	for _, option := range options {
-		option(c)
-	}
-	return c
 }
 
 type client struct {

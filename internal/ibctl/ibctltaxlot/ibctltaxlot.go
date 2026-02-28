@@ -11,9 +11,7 @@ import (
 	"sort"
 	"time"
 
-	positionv1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/position/v1"
-	taxlotv1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/taxlot/v1"
-	tradev1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/trade/v1"
+	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
 	"github.com/bufdev/ibctl/internal/pkg/moneypb"
 	"github.com/bufdev/ibctl/internal/pkg/timepb"
 	"github.com/bufdev/ibctl/internal/standard/xtime"
@@ -25,14 +23,14 @@ type taxLot struct {
 	openDate        xtime.Date
 	quantity        int64
 	costBasisMicros int64
-	currency        string
+	currencyCode    string
 }
 
 // ComputeTaxLots computes open tax lots from trades using FIFO ordering.
 // Buys create new lots, sells consume the oldest lots first.
-func ComputeTaxLots(trades []*tradev1.Trade) ([]*taxlotv1.TaxLot, error) {
+func ComputeTaxLots(trades []*datav1.Trade) ([]*datav1.TaxLot, error) {
 	// Group trades by symbol, sorted by trade date.
-	symbolTrades := make(map[string][]*tradev1.Trade)
+	symbolTrades := make(map[string][]*datav1.Trade)
 	for _, trade := range trades {
 		symbolTrades[trade.GetSymbol()] = append(symbolTrades[trade.GetSymbol()], trade)
 	}
@@ -48,8 +46,10 @@ func ComputeTaxLots(trades []*tradev1.Trade) ([]*taxlotv1.TaxLot, error) {
 	symbolLots := make(map[string][]*taxLot)
 	for symbol, trades := range symbolTrades {
 		for _, trade := range trades {
-			switch trade.GetBuySell() {
-			case "BUY":
+			switch trade.GetSide() {
+			case datav1.TradeSide_TRADE_SIDE_UNSPECIFIED:
+				return nil, fmt.Errorf("trade %s has unspecified side", trade.GetTradeId())
+			case datav1.TradeSide_TRADE_SIDE_BUY:
 				// Parse the trade date for the lot open date.
 				openDate, err := protoDateToXtimeDate(trade.GetTradeDate())
 				if err != nil {
@@ -61,9 +61,9 @@ func ComputeTaxLots(trades []*tradev1.Trade) ([]*taxlotv1.TaxLot, error) {
 					openDate:        openDate,
 					quantity:        trade.GetQuantity(),
 					costBasisMicros: moneypb.MoneyToMicros(trade.GetTradePrice()),
-					currency:        trade.GetCurrency(),
+					currencyCode:    trade.GetCurrencyCode(),
 				})
-			case "SELL":
+			case datav1.TradeSide_TRADE_SIDE_SELL:
 				// Sells consume the oldest lots first (FIFO).
 				remainingQuantity := -trade.GetQuantity() // Sell quantity is negative.
 				lots := symbolLots[symbol]
@@ -87,23 +87,19 @@ func ComputeTaxLots(trades []*tradev1.Trade) ([]*taxlotv1.TaxLot, error) {
 		}
 	}
 	// Convert internal lots to proto tax lots.
-	today := xtime.TimeToDate(time.Now())
-	var result []*taxlotv1.TaxLot
+	var result []*datav1.TaxLot
 	for _, lots := range symbolLots {
 		for _, lot := range lots {
 			protoOpenDate, err := timepb.DateToProto(lot.openDate)
 			if err != nil {
 				return nil, err
 			}
-			// Long-term if held >= 365 days.
-			longTerm := today.DaysSince(lot.openDate) >= 365
-			result = append(result, &taxlotv1.TaxLot{
+			result = append(result, &datav1.TaxLot{
 				Symbol:         lot.symbol,
 				OpenDate:       protoOpenDate,
 				Quantity:       lot.quantity,
-				CostBasisPrice: moneypb.MoneyFromMicros(lot.currency, lot.costBasisMicros),
-				Currency:       lot.currency,
-				LongTerm:       longTerm,
+				CostBasisPrice: moneypb.MoneyFromMicros(lot.currencyCode, lot.costBasisMicros),
+				CurrencyCode:   lot.currencyCode,
 			})
 		}
 	}
@@ -118,18 +114,18 @@ func ComputeTaxLots(trades []*tradev1.Trade) ([]*taxlotv1.TaxLot, error) {
 }
 
 // ComputePositions aggregates tax lots into positions with weighted average cost basis.
-func ComputePositions(taxLots []*taxlotv1.TaxLot) []*taxlotv1.ComputedPosition {
+func ComputePositions(taxLots []*datav1.TaxLot) []*datav1.ComputedPosition {
 	// Aggregate quantities and total cost per symbol.
 	type symbolData struct {
 		quantity        int64
 		totalCostMicros int64
-		currency        string
+		currencyCode    string
 	}
 	symbolDataMap := make(map[string]*symbolData)
 	for _, lot := range taxLots {
 		data, ok := symbolDataMap[lot.GetSymbol()]
 		if !ok {
-			data = &symbolData{currency: lot.GetCurrency()}
+			data = &symbolData{currencyCode: lot.GetCurrencyCode()}
 			symbolDataMap[lot.GetSymbol()] = data
 		}
 		data.quantity += lot.GetQuantity()
@@ -137,18 +133,18 @@ func ComputePositions(taxLots []*taxlotv1.TaxLot) []*taxlotv1.ComputedPosition {
 		data.totalCostMicros += moneypb.MoneyToMicros(lot.GetCostBasisPrice()) * lot.GetQuantity()
 	}
 	// Build computed positions.
-	var positions []*taxlotv1.ComputedPosition
+	var positions []*datav1.ComputedPosition
 	for symbol, data := range symbolDataMap {
 		if data.quantity == 0 {
 			continue
 		}
 		// Weighted average cost basis = total cost / total quantity.
 		avgCostMicros := data.totalCostMicros / data.quantity
-		positions = append(positions, &taxlotv1.ComputedPosition{
+		positions = append(positions, &datav1.ComputedPosition{
 			Symbol:                symbol,
 			Quantity:              data.quantity,
-			AverageCostBasisPrice: moneypb.MoneyFromMicros(data.currency, avgCostMicros),
-			Currency:              data.currency,
+			AverageCostBasisPrice: moneypb.MoneyFromMicros(data.currencyCode, avgCostMicros),
+			CurrencyCode:          data.currencyCode,
 		})
 	}
 	// Sort by symbol for deterministic output.
@@ -158,16 +154,25 @@ func ComputePositions(taxLots []*taxlotv1.TaxLot) []*taxlotv1.ComputedPosition {
 	return positions
 }
 
+// IsLongTerm returns whether a tax lot is long-term (held >= 365 days) as of the given date.
+func IsLongTerm(lot *datav1.TaxLot, asOf xtime.Date) (bool, error) {
+	openDate, err := protoDateToXtimeDate(lot.GetOpenDate())
+	if err != nil {
+		return false, err
+	}
+	return asOf.DaysSince(openDate) >= 365, nil
+}
+
 // VerifyPositions compares computed positions against IBKR-reported positions.
 // Returns a list of discrepancy descriptions, empty if all match.
-func VerifyPositions(computed []*taxlotv1.ComputedPosition, reported []*positionv1.Position) []string {
+func VerifyPositions(computed []*datav1.ComputedPosition, reported []*datav1.Position) []string {
 	// Build a map of computed positions by symbol.
-	computedMap := make(map[string]*taxlotv1.ComputedPosition, len(computed))
+	computedMap := make(map[string]*datav1.ComputedPosition, len(computed))
 	for _, pos := range computed {
 		computedMap[pos.GetSymbol()] = pos
 	}
 	// Build a map of reported positions by symbol.
-	reportedMap := make(map[string]*positionv1.Position, len(reported))
+	reportedMap := make(map[string]*datav1.Position, len(reported))
 	for _, pos := range reported {
 		reportedMap[pos.GetSymbol()] = pos
 	}
@@ -198,7 +203,7 @@ func VerifyPositions(computed []*taxlotv1.ComputedPosition, reported []*position
 }
 
 // tradeDateString returns a sortable date string from a trade's trade_date.
-func tradeDateString(trade *tradev1.Trade) string {
+func tradeDateString(trade *datav1.Trade) string {
 	if d := trade.GetTradeDate(); d != nil {
 		return fmt.Sprintf("%04d-%02d-%02d", d.GetYear(), d.GetMonth(), d.GetDay())
 	}
@@ -206,7 +211,7 @@ func tradeDateString(trade *tradev1.Trade) string {
 }
 
 // taxLotDateString returns a sortable date string from a tax lot's open_date.
-func taxLotDateString(lot *taxlotv1.TaxLot) string {
+func taxLotDateString(lot *datav1.TaxLot) string {
 	if d := lot.GetOpenDate(); d != nil {
 		return fmt.Sprintf("%04d-%02d-%02d", d.GetYear(), d.GetMonth(), d.GetDay())
 	}
@@ -218,7 +223,8 @@ func protoDateToXtimeDate(d interface {
 	GetYear() uint32
 	GetMonth() uint32
 	GetDay() uint32
-}) (xtime.Date, error) {
+},
+) (xtime.Date, error) {
 	if d == nil {
 		return xtime.Date{}, errors.New("nil date")
 	}

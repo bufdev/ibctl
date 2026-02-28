@@ -1,0 +1,51 @@
+// Copyright 2026 Peter Edge
+//
+// All rights reserved.
+
+syntax = "proto3";
+
+package ibctl.data.v1;
+
+import "buf/validate/validate.proto";
+import "standard/money/v1/money.proto";
+import "standard/time/v1/date.proto";
+
+// TaxLot represents a single open tax lot computed via FIFO.
+message TaxLot {
+  option (buf.validate.message).cel = {
+    id: "cost_basis_price_currency"
+    message: "cost_basis_price currency_code must match tax lot currency_code"
+    expression: "this.cost_basis_price.currency_code == this.currency_code"
+  };
+
+  // The ticker symbol.
+  string symbol = 1 [(buf.validate.field).required = true];
+  // The date the lot was opened (trade date of the buy).
+  standard.time.v1.Date open_date = 2 [(buf.validate.field).required = true];
+  // The number of shares remaining in this lot.
+  int64 quantity = 3;
+  // The cost basis price per share.
+  standard.money.v1.Money cost_basis_price = 4 [(buf.validate.field).required = true];
+  // The three-letter ISO 4217 currency code for this tax lot.
+  // The cost_basis_price Money field must use this same currency code.
+  string currency_code = 5 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
+}
+
+// ComputedPosition represents a position derived from tax lots.
+message ComputedPosition {
+  option (buf.validate.message).cel = {
+    id: "average_cost_basis_price_currency"
+    message: "average_cost_basis_price currency_code must match computed position currency_code"
+    expression: "this.average_cost_basis_price.currency_code == this.currency_code"
+  };
+
+  // The ticker symbol.
+  string symbol = 1 [(buf.validate.field).required = true];
+  // The total number of shares across all tax lots.
+  int64 quantity = 2;
+  // The weighted average cost basis price per share.
+  standard.money.v1.Money average_cost_basis_price = 3 [(buf.validate.field).required = true];
+  // The three-letter ISO 4217 currency code for this position.
+  // The average_cost_basis_price Money field must use this same currency code.
+  string currency_code = 4 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
+}

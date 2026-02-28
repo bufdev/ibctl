@@ -1,0 +1,54 @@
+// Copyright 2026 Peter Edge
+//
+// All rights reserved.
+
+syntax = "proto3";
+
+package ibctl.data.v1;
+
+import "buf/validate/validate.proto";
+import "standard/money/v1/money.proto";
+
+// Position represents an open position as reported by IBKR.
+message Position {
+  option (buf.validate.message).cel = {
+    id: "cost_basis_price_currency"
+    message: "cost_basis_price currency_code must match position currency_code"
+    expression: "this.cost_basis_price.currency_code == this.currency_code"
+  };
+  option (buf.validate.message).cel = {
+    id: "market_price_currency"
+    message: "market_price currency_code must match position currency_code"
+    expression: "this.market_price.currency_code == this.currency_code"
+  };
+  option (buf.validate.message).cel = {
+    id: "market_value_currency"
+    message: "market_value currency_code must match position currency_code"
+    expression: "this.market_value.currency_code == this.currency_code"
+  };
+  option (buf.validate.message).cel = {
+    id: "fifo_pnl_unrealized_currency"
+    message: "fifo_pnl_unrealized currency_code must match position currency_code"
+    expression: "!has(this.fifo_pnl_unrealized) || this.fifo_pnl_unrealized.currency_code == this.currency_code"
+  };
+
+  // The ticker symbol.
+  string symbol = 1 [(buf.validate.field).required = true];
+  // The security description.
+  string description = 2;
+  // The asset category (e.g., "STK", "OPT").
+  string asset_category = 3 [(buf.validate.field).required = true];
+  // The number of shares or contracts held. May be negative for short positions.
+  int64 quantity = 4;
+  // The cost basis price per share.
+  standard.money.v1.Money cost_basis_price = 5 [(buf.validate.field).required = true];
+  // The current market price per share.
+  standard.money.v1.Money market_price = 6 [(buf.validate.field).required = true];
+  // The total market value of the position.
+  standard.money.v1.Money market_value = 7 [(buf.validate.field).required = true];
+  // The unrealized P&L computed by IBKR using FIFO.
+  standard.money.v1.Money fifo_pnl_unrealized = 8;
+  // The three-letter ISO 4217 currency code for this position.
+  // All Money fields must use this same currency code.
+  string currency_code = 9 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
+}

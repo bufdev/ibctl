@@ -1,245 +1,88 @@
-# ibctl Implementation Plan
+# Skills Codification Plan
 
 ## Context
 
-ibctl is a CLI tool for analyzing Interactive Brokers (IBKR) holdings and trades. It downloads data via the IBKR Flex Query API, computes tax lots using FIFO, and displays holdings with computed average prices and positions. The tool caches all data as JSON files (no database) and supports table/csv/json output.
-
-## API Approach
-
-**Flex Query API** (confirmed by user):
-- REST-based, token auth, no local gateway needed
-- Two-step: `SendRequest` (get reference code) → `GetStatement` (get XML)
-- User creates a Flex Query in the IBKR portal covering Trades, Open Positions, and Cash Transactions
-- Config stores the token + query ID
-
-**Exchange rates** (confirmed by user): IBKR data primary, frankfurter.dev API as fallback for missing dates.
-
-## Package Dependency Order
-
-```
-cmd/ibctl -> internal/ibctl -> internal/pkg -> internal/standard
-```
-
-## Phase 0: Proto Schemas and Standard Library
+This session produced extensive review feedback on Go project architecture, protobuf design, CLI patterns, and API design. The feedback should be codified into skills so it doesn't need to be repeated. This plan identifies what to update and what to create.
 
-### 0A: Standard protos
+## Skills to Update
 
-Copy from financemigrate:
-- `proto/standard/time/v1/date.proto`
-- `proto/standard/money/v1/money.proto`
+### 1. `organizing-go-code` — Add API Design and Constructor Patterns
 
-Delete placeholder:
-- `proto/ibctl/foo/v1/foo.proto` and its generated code
+The existing skill covers file naming, declaration ordering, and method placement. It's missing the API design wisdom from this session.
 
-### 0B: ibctl proto messages
+**Add sections:**
 
-- `proto/ibctl/trade/v1/trade.proto` — Trade message (trade_id, trade_date, settle_date, symbol, description, asset_category, buy_sell, quantity, trade_price, proceeds, commission, currency, fifo_pnl_realized)
-- `proto/ibctl/position/v1/position.proto` — Position message (symbol, description, asset_category, quantity, cost_basis_price, market_price, market_value, fifo_pnl_unrealized, currency). Wrapper message `Positions`.
-- `proto/ibctl/taxlot/v1/taxlot.proto` — TaxLot message (symbol, open_date, quantity, cost_basis_price, currency, long_term). ComputedPosition message (symbol, quantity, average_cost_basis_price, currency). Wrapper messages.
-- `proto/ibctl/exchangerate/v1/exchangerate.proto` — ExchangeRate message (date, base_currency, quote_currency, rate as string). Wrapper message.
-- `proto/ibctl/metadata/v1/metadata.proto` — Metadata message (download_time as string, positions_verified bool, verification_notes repeated string)
+- **Minimal Public API**: Every package should expose only what external consumers need. Unexport types, functions, and constants that are only used within the package. If it's not used outside the package, it's private. When in doubt, start private — you can always export later.
 
-All use `standard.money.v1.Money` and `standard.time.v1.Date` where appropriate. Wrapper messages (e.g., `Trades { repeated Trade trades = 1; }`) for top-level JSON serialization.
+- **Constructor Patterns**: Required parameters are positional constructor arguments. Functional options are only for truly optional configuration (things with sensible defaults). Logger is always a required parameter, never a functional option. Example: `func NewClient(logger *slog.Logger, options ...ClientOption) Client` where only `ClientWithHTTPClient` is an option (defaults to `http.DefaultClient`).
 
-### 0C: Standard library packages
+- **No Global State**: Never use `slog.Default()`, `http.DefaultClient` as implicit defaults in constructors, or `os.Getenv()` directly. Use dependency injection: loggers from `appext.Container.Logger()`, env vars from `container.Env()`, HTTP clients as explicit params.
 
-- `internal/standard/xtime/date.go` — Copy from financemigrate (`/Users/pedge/git/financemigrate/internal/standard/xtime/date.go`), update module path
-- `internal/standard/xtime/date_test.go` — Copy from financemigrate, update module path
+- **File Consolidation**: Public types belong in a file named after the package (`foo.go` for package `foo`) or in files named after the type. Don't split a package across files unless there's a clear organizational reason. The financemigrate pattern: one `.go` file per package directory.
 
-### 0D: Proto helper packages
+- **Section Comment Convention**: Use `// *** PRIVATE ***` to separate public and private declarations when it aids readability.
 
-- `internal/pkg/timepb/timepb.go` — Adapt from financemigrate. Functions: `NewProtoDate`, `DateToProto`, `ProtoToDate`
-- `internal/pkg/moneypb/moneypb.go` — Adapt from financemigrate. Functions: `NewProtoMoney`, `MoneyTimes`, `MoneyValueToString`, add `MoneyToMicros`
+### 2. `scaffolding-go-projects` — Add Package Naming and Structure Conventions
 
-**Verify:** `buf lint`, `make generate`, `go test ./internal/standard/...`, `go build ./internal/pkg/...`
+**Add sections:**
 
-## Phase 1: Configuration System
+- **Package Naming for Provider-Specific Code**: Packages wrapping a specific external service should be named after that service, not the abstract concept. Examples: `frankfurter` not `fxrate`, `ibkrflexquery` not `flexquery`. The package name tells you what provider it wraps.
 
-### 1A: `internal/ibctl/ibctlconfig/ibctlconfig.go`
+- **Package Dependency Layering**: Enforce strict import ordering: `cmd → internal/{app} → internal/pkg → internal/standard`. Standard packages (`internal/standard/x*`) extend stdlib only. Pkg packages (`internal/pkg`) are generic. App packages (`internal/{app}`) are app-specific and prefixed (e.g., `ibctldownload`).
 
-Types:
-- `ExternalConfig` — YAML struct: `version`, `data`, `ibkr` (token, query_id), `symbols` (name, category, type, sector)
-- `Config` — Validated runtime config: resolved `DataDirPath`, `IBKRToken`, `IBKRQueryID`, `SymbolConfigs` map
-- `SymbolConfig` — Category, Type, Sector
+- **Leaning into `buf.build/go/app`**: Use `appext.Container` for config/data/cache directory paths, logger, and environment variables. Use `ConfigDirPath()` / `DataDirPath()` instead of configurable paths. Use `container.Env()` instead of `os.Getenv()`. Use `container.Logger()` instead of creating loggers.
 
-Functions:
-- `ReadExternalConfig(filePath string) (ExternalConfig, error)` — Parse YAML
-- `NewConfig(externalConfig ExternalConfig) (*Config, error)` — Validate (version=v1, data non-empty, ibkr fields non-empty, unique symbol names), resolve `~`
-- `InitConfig(filePath string) error` — Write commented template, error if file exists
-- `ValidateConfigFile(filePath string) error` — Read + validate
-- `(c *Config) DataDirV1Path() string` — Returns `${DataDirPath}/v1`
+## New Skills to Create
 
-Config template (hardcoded string with comments since yaml.v3 doesn't emit comments):
-```yaml
-# The configuration file version.
-#
-# Required. The only current valid version is v1.
-version: v1
-# The data directory.
-#
-# Required.
-data: ~/Documents/ibctl
-# IBKR Flex Query configuration.
-#
-# Required. Create a Flex Query at https://www.interactivebrokers.com
-# under Performance & Reports > Flex Queries.
-ibkr:
-  # The Flex Web Service token.
-  token: ""
-  # The Flex Query ID.
-  query_id: ""
-# Symbol classification configuration.
-#
-# Optional. Adds category, type, and sector metadata to holdings output.
-# symbols:
-#   - name: NET
-#     category: EQUITY
-#     type: STOCK
-#     sector: TECH
-```
+### 3. NEW: `designing-protobuf-messages` (or update `buf-standards:protobuf`)
 
-### 1B: `internal/pkg/cli/cli.go`
+**Description**: Use when designing protobuf messages for data storage or APIs, defining field types, adding validation, or reviewing proto file structure.
 
-Port from financemigrate (`/Users/pedge/git/financemigrate/internal/pkg/cli/cli.go`), add:
+**Content:**
 
-- `Format` type (`table`, `csv`, `json`) with `ParseFormat`
-- `WriteTable(writer, headers, rows)` — Using `text/tabwriter`
-- `WriteCSVRecords(writer, records)` — From financemigrate
-- `WriteJSON[O any](writer, objects...)` — From financemigrate
-- `WriteProtoMessageJSON(filePath, message)` / `ReadProtoMessageJSON(filePath, message)` — Single proto message file I/O using protojson
-- `ForFile`, `ForWriteFile`, `UnmarshalYAMLStrict`, `ExpandHome` — Utilities
+- **Protovalidate Everywhere**: Every proto file should import `buf/validate/validate.proto`. Required fields use `(buf.validate.field).required = true`. Enums use `(buf.validate.field).enum.not_in = 0` to reject unspecified values.
 
-### 1C: Config commands
+- **Use Enums Over Strings for Closed Sets**: Don't use strings for fields with a known set of values (e.g., buy/sell). Define a proper enum with `TYPE_UNSPECIFIED = 0` and specific values. Follow buf naming: `ENUM_NAME_VALUE_NAME` (e.g., `TRADE_SIDE_BUY`). Handle the unspecified case exhaustively in Go switch statements.
 
-- `cmd/ibctl/internal/command/config/configinit/configinit.go` — `NewCommand`, flags: `--config`, calls `ibctlconfig.InitConfig`
-- `cmd/ibctl/internal/command/config/configvalidate/configvalidate.go` — `NewCommand`, flags: `--config`, calls `ibctlconfig.ValidateConfigFile`
-- Update `cmd/ibctl/main.go` — Replace analyze placeholder with config sub-command group
+- **Currency Codes**: Use `string.pattern = "^[A-Z]{3}$"` for ISO 4217 currency codes, not just `string.len = 3`.
 
-Delete:
-- `cmd/ibctl/internal/command/analyze/analyze.go`
-- `internal/ibctl/ibctl.go`
+- **Message-Level Consistency via CEL**: When a message has fields that must be consistent with each other, use `(buf.validate.message).cel` constraints to enforce it. Examples: sub-message fields that must match a top-level field, dates that must be ordered, quantities that must agree. Use `!has()` guards for optional fields. Give each constraint a descriptive `id` and `message`.
 
-**Verify:** `ibctl config init` creates file, `ibctl config init` again errors, `ibctl config validate` validates
+- **No Wrapper Messages for Repeated Types**: Don't create `Foos { repeated Foo foos = 1; }` just for JSON serialization. Store newline-separated proto JSON (one message per line). Provide `WriteMessagesJSON`/`ReadMessagesJSON` helpers.
 
-## Phase 2: API Clients
+- **Use Standard Types**: Use `google.protobuf.Timestamp` for timestamps, not strings. Use `standard.money.v1.Money` (units + micros) for monetary values, not strings. Use `standard.time.v1.Date` for dates.
 
-### 2A: `internal/pkg/flexquery/flexquery.go`
+- **Decimal Values as Units/Micros**: Don't store decimal numbers as strings. Use the units/micros pattern (int64 units + int64 micros with `gte = -999999, lte = 999999`). This applies to exchange rates, prices, or any decimal value.
 
-Flex Query API client (not ibctl-specific):
+- **File Naming**: Proto files use `snake_case.proto` (e.g., `exchange_rate.proto` not `exchangerate.proto`).
 
-- `Client` interface with `Download(ctx, token, queryID) ([]byte, error)`
-- `NewClient(options ...ClientOption) Client`
-- `ClientWithHTTPClient` option
-- SendRequest URL: `https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/SendRequest`
-- GetStatement URL: `https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/GetStatement`
-- Query params: `v=3`, `t=<token>`, `q=<queryID/refCode>`
-- User-Agent: `"Java"` (IBKR requirement)
-- Retry logic for GetStatement (poll until ready, respect rate limits)
+- **Dynamic vs Stored Fields**: Don't store fields that are dynamic/computed relative to the current date (e.g., `long_term` based on holding period). Compute them at display time with an `--as-of` flag defaulting to today.
 
-### `internal/pkg/flexquery/parse.go`
+### 4. NEW: `designing-go-cli-commands`
 
-XML parsing structs:
-- `FlexQueryResponse` → `FlexStatements` → `FlexStatement`
-- `FlexStatement`: `Trades []XMLTrade`, `OpenPositions []XMLPosition`, `CashTransactions []XMLCashTransaction`
-- XML attribute-based structs for Trade, Position, CashTransaction
-- `ParseFlexQueryResponse(data []byte) (*FlexQueryResponse, error)`
+**Description**: Use when building CLI commands using `buf.build/go/app`, wiring command trees, handling configuration, or designing command flags and error messages.
 
-### 2B: `internal/pkg/fxrate/fxrate.go`
+**Content:**
 
-Exchange rate client using frankfurter.dev:
-- `Client` interface with `GetRates(ctx, baseCurrency, quoteCurrency, startDate, endDate) (map[string]string, error)`
-- `NewClient(options ...ClientOption) Client`
-- Endpoint: `GET https://api.frankfurter.dev/v1/{start}..{end}?base={base}&symbols={quote}`
+- **Configuration via `appext.Container`**: Use `container.ConfigDirPath()` for config file location, `container.DataDirPath()` for data storage. Don't add `--config` flags for file paths. Config file is always `config.yaml` in the config dir.
 
-**Verify:** Unit tests with mock HTTP servers
+- **Config Init / Edit / Validate Pattern**: Provide `config init` (create with template, print path), `config edit` (open in `$EDITOR`, create if missing, print path), `config validate` (read + validate). Init errors if file exists. Edit creates if it doesn't exist.
 
-## Phase 3: Download Command
+- **Error Messages That Guide Users**: When config is missing, tell them what to run: `configuration file not found at %s, run "ibctl config init" to create one`. Don't just say "file not found".
 
-### 3A: `internal/ibctl/ibctltaxlot/ibctltaxlot.go`
+- **Secrets via Environment Variables**: API keys and tokens come from env vars (read via `container.Env()`), never from config files. Document the env var name in the config template as a comment and in the README.
 
-Tax lot engine:
-- `ComputeTaxLots(trades []*tradev1.Trade) ([]*taxlotv1.TaxLot, error)` — FIFO. Group by symbol, buys create lots, sells consume oldest first. Track holding period (>= 1 year = long_term).
-- `ComputePositions(taxLots []*taxlotv1.TaxLot) ([]*taxlotv1.ComputedPosition, error)` — Sum quantities, weighted average price per symbol
-- `VerifyPositions(computed, reported) []string` — Compare quantities and average prices, return discrepancy descriptions
+- **Root Command Help**: Include config and data directory paths in the root command's `Long` description so users can find them from `--help`.
 
-Pattern reference: `/Users/pedge/git/financemigrate/internal/fmanalyze/fmanalyze.go` (TaxLots function)
+- **Structured Return Types Over Raw Bytes**: API clients should return parsed, structured data, not raw `[]byte`. Parse internally, return typed structs. Document the API flow in the package doc comment.
 
-### 3B: `internal/ibctl/ibctldownload/ibctldownload.go`
+- **Command Wiring**: Commands construct their dependencies explicitly in the `run` function. Extract logger from `container.Logger()`, construct clients with required params, pass everything to the domain package. No global state, no defaults.
 
-Download orchestrator:
-- `Downloader` interface with `Download(ctx) error`
-- `NewDownloader(config, options...) Downloader` with functional options (Logger, FlexQueryClient, FXRateClient)
+## Summary
 
-Download pipeline:
-1. Create `${DATA_DIR}/v1/` if needed
-2. Fetch XML via flexquery.Client
-3. Parse XML via flexquery.ParseFlexQueryResponse
-4. Convert XMLTrade → tradev1.Trade protos → write `trades.json`
-5. Convert XMLPosition → positionv1.Position protos → write `positions.json`
-6. Extract FX rates from CashTransactions + fallback via fxrate.Client → write `exchange_rates.json`
-7. Compute tax lots → write `tax_lots.json`
-8. Compute positions from tax lots
-9. Verify computed vs IBKR-reported positions
-10. Write `metadata.json` with timestamp and verification results
-
-### `internal/ibctl/ibctldownload/convert.go`
-
-- `XMLTradeToProto(*flexquery.XMLTrade) (*tradev1.Trade, error)` — Parse string fields to proto using timepb/moneypb
-- `XMLPositionToProto(*flexquery.XMLPosition) (*positionv1.Position, error)`
-
-### 3C: Wire download command
-
-- `cmd/ibctl/internal/command/download/download.go` — `NewCommand`, flags: `--config`
-- Update `cmd/ibctl/main.go` — Add download sub-command
-
-**Verify:** `ibctl download --config ibctl.yaml` downloads data, writes JSON files to data dir
-
-## Phase 4: Holdings Overview Command
-
-### 4A: `internal/ibctl/ibctlholdings/ibctlholdings.go`
-
-- `HoldingOverview` struct: Symbol, LastPrice, AveragePrice, Position, Category, Type, Sector (json tags)
-- `GetHoldingsOverview(config) ([]*HoldingOverview, error)` — Read tax_lots.json and positions.json, merge with config symbol metadata
-- `HoldingsOverviewHeaders() []string` and `HoldingOverviewToRow(*HoldingOverview) []string` for table/CSV output
-
-### 4B: Wire holdings overview command
-
-- `cmd/ibctl/internal/command/holdings/holdingsoverview/holdingsoverview.go` — `NewCommand`, flags: `--config`, `--format` (table|csv|json)
-- Update `cmd/ibctl/main.go` — Add holdings sub-command group
-
-**Verify:** `ibctl holdings overview --format table`, `--format csv`, `--format json` all produce correct output
-
-## Phase 5: Polish
-
-- Add `Short` descriptions to all commands for `--help`
-- Update `README.md` with tool description, IBKR Flex Query setup instructions, usage examples
-- `make generate` (no diff), `make lint`, `make test`
-
-## Final Command Tree
-
-```
-ibctl
-├── config
-│   ├── init       # Create new config file with documentation
-│   └── validate   # Validate config file
-├── download       # Download and cache IBKR data
-└── holdings
-    └── overview   # Display holdings with prices, positions, classifications
-```
-
-## File Manifest
-
-**Create (proto):** `proto/standard/{time,money}/v1/*.proto`, `proto/ibctl/{trade,position,taxlot,exchangerate,metadata}/v1/*.proto`
-**Delete (proto):** `proto/ibctl/foo/v1/foo.proto`
-**Create (Go):** `internal/standard/xtime/*.go`, `internal/pkg/{timepb,moneypb,cli,flexquery,fxrate}/*.go`, `internal/ibctl/{ibctlconfig,ibctldownload,ibctltaxlot,ibctlholdings}/*.go`, `cmd/ibctl/internal/command/{config/configinit,config/configvalidate,download,holdings/holdingsoverview}/*.go`
-**Modify:** `cmd/ibctl/main.go`, `go.mod`, `buf.yaml` (if needed for google/protobuf dep), `README.md`
-**Delete (Go):** `cmd/ibctl/internal/command/analyze/analyze.go`, `internal/ibctl/ibctl.go`, `internal/gen/proto/go/ibctl/foo/v1/foo.pb.go`
-
-## Verification
-
-1. `make generate` — no diff in generated code
-2. `buf lint` — all protos pass
-3. `go vet ./...` — no issues
-4. `make lint` — all linters pass
-5. `make test` — all tests pass
-6. Manual: `ibctl config init`, edit config, `ibctl config validate`, `ibctl download`, `ibctl holdings overview --format table|csv|json`
+| Skill | Action | Key Topics |
+|-------|--------|------------|
+| `organizing-go-code` | Update | Minimal API, constructors, no global state, file consolidation |
+| `scaffolding-go-projects` | Update | Provider naming, dependency layering, app-go patterns |
+| `designing-protobuf-messages` | Create | Protovalidate, enums, currency, Money consistency, no wrappers, units/micros |
+| `designing-go-cli-commands` | Create | app-go config, init/edit/validate, error messages, secrets, structured returns |

@@ -12,19 +12,18 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 
-	exchangeratev1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/exchangerate/v1"
-	metadatav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/metadata/v1"
-	positionv1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/position/v1"
-	taxlotv1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/taxlot/v1"
-	tradev1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/trade/v1"
+	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctltaxlot"
-	"github.com/bufdev/ibctl/internal/pkg/cli"
-	"github.com/bufdev/ibctl/internal/pkg/flexquery"
-	"github.com/bufdev/ibctl/internal/pkg/fxrate"
+	"github.com/bufdev/ibctl/internal/pkg/frankfurter"
+	"github.com/bufdev/ibctl/internal/pkg/ibkrflexquery"
+	"github.com/bufdev/ibctl/internal/pkg/moneypb"
+	"github.com/bufdev/ibctl/internal/pkg/protoio"
 	"github.com/bufdev/ibctl/internal/pkg/timepb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Downloader is the interface for downloading and caching IBKR data.
@@ -33,133 +32,100 @@ type Downloader interface {
 	Download(ctx context.Context) error
 }
 
-// DownloaderOption is a functional option for configuring the Downloader.
-type DownloaderOption func(*downloader)
-
-// WithLogger sets the logger for the downloader.
-func WithLogger(logger *slog.Logger) DownloaderOption {
-	return func(d *downloader) {
-		d.logger = logger
+// NewDownloader creates a new Downloader with all required dependencies.
+// The ibkrToken is the Flex Web Service token from the IBKR_TOKEN environment variable.
+// The dataDirV1Path is the versioned data directory (e.g., ~/.local/share/ibctl/v1).
+func NewDownloader(
+	logger *slog.Logger,
+	ibkrToken string,
+	dataDirV1Path string,
+	config *ibctlconfig.Config,
+	flexQueryClient ibkrflexquery.Client,
+	fxRateClient frankfurter.Client,
+) Downloader {
+	return &downloader{
+		logger:          logger,
+		ibkrToken:       ibkrToken,
+		dataDirV1Path:   dataDirV1Path,
+		config:          config,
+		flexQueryClient: flexQueryClient,
+		fxRateClient:    fxRateClient,
 	}
-}
-
-// WithFlexQueryClient sets a custom Flex Query API client.
-func WithFlexQueryClient(client flexquery.Client) DownloaderOption {
-	return func(d *downloader) {
-		d.flexQueryClient = client
-	}
-}
-
-// WithFXRateClient sets a custom exchange rate client.
-func WithFXRateClient(client fxrate.Client) DownloaderOption {
-	return func(d *downloader) {
-		d.fxRateClient = client
-	}
-}
-
-// NewDownloader creates a new Downloader with the given configuration and options.
-func NewDownloader(config *ibctlconfig.Config, options ...DownloaderOption) Downloader {
-	d := &downloader{
-		config: config,
-		logger: slog.Default(),
-	}
-	for _, option := range options {
-		option(d)
-	}
-	// Set default clients if not provided.
-	if d.flexQueryClient == nil {
-		d.flexQueryClient = flexquery.NewClient(
-			flexquery.ClientWithLogger(d.logger),
-		)
-	}
-	if d.fxRateClient == nil {
-		d.fxRateClient = fxrate.NewClient()
-	}
-	return d
 }
 
 type downloader struct {
-	config          *ibctlconfig.Config
 	logger          *slog.Logger
-	flexQueryClient flexquery.Client
-	fxRateClient    fxrate.Client
+	ibkrToken       string
+	dataDirV1Path   string
+	config          *ibctlconfig.Config
+	flexQueryClient ibkrflexquery.Client
+	fxRateClient    frankfurter.Client
 }
 
 func (d *downloader) Download(ctx context.Context) error {
 	// Step 1: Create the data directory if needed.
-	dataDirV1 := d.config.DataDirV1Path()
+	dataDirV1 := d.dataDirV1Path
 	if err := os.MkdirAll(dataDirV1, 0o755); err != nil {
 		return fmt.Errorf("creating data directory: %w", err)
 	}
 	d.logger.Info("data directory ready", "path", dataDirV1)
 
-	// Step 2: Fetch XML via the Flex Query API.
+	// Step 2: Fetch and parse the Flex Query statement.
 	d.logger.Info("downloading flex query data")
-	xmlData, err := d.flexQueryClient.Download(ctx, d.config.IBKRToken, d.config.IBKRQueryID)
+	statement, err := d.flexQueryClient.Download(ctx, d.ibkrToken, d.config.IBKRQueryID)
 	if err != nil {
 		return fmt.Errorf("downloading flex query: %w", err)
 	}
-	d.logger.Info("flex query data downloaded", "bytes", len(xmlData))
+	d.logger.Info("flex query data downloaded")
 
-	// Step 3: Parse the XML response.
-	response, err := flexquery.ParseFlexQueryResponse(xmlData)
-	if err != nil {
-		return fmt.Errorf("parsing flex query response: %w", err)
-	}
-	statement := response.FlexStatements.FlexStatement
-
-	// Step 4: Convert XML trades to proto and write trades.json.
+	// Step 3: Convert XML trades to proto and write trades.json (newline-separated).
 	trades, err := d.convertTrades(statement.Trades)
 	if err != nil {
 		return err
 	}
-	tradesProto := &tradev1.Trades{Trades: trades}
 	tradesPath := filepath.Join(dataDirV1, "trades.json")
-	if err := cli.WriteProtoMessageJSON(tradesPath, tradesProto); err != nil {
+	if err := protoio.WriteMessagesJSON(tradesPath, trades); err != nil {
 		return fmt.Errorf("writing trades: %w", err)
 	}
 	d.logger.Info("trades written", "count", len(trades), "path", tradesPath)
 
-	// Step 5: Convert XML positions to proto and write positions.json.
+	// Step 4: Convert XML positions to proto and write positions.json (newline-separated).
 	positions, err := d.convertPositions(statement.OpenPositions)
 	if err != nil {
 		return err
 	}
-	positionsProto := &positionv1.Positions{Positions: positions}
 	positionsPath := filepath.Join(dataDirV1, "positions.json")
-	if err := cli.WriteProtoMessageJSON(positionsPath, positionsProto); err != nil {
+	if err := protoio.WriteMessagesJSON(positionsPath, positions); err != nil {
 		return fmt.Errorf("writing positions: %w", err)
 	}
 	d.logger.Info("positions written", "count", len(positions), "path", positionsPath)
 
-	// Step 6: Extract FX rates from cash transactions and write exchange_rates.json.
+	// Step 5: Extract FX rates from cash transactions and write exchange_rates.json (newline-separated).
 	exchangeRates := d.extractExchangeRates(statement.CashTransactions)
 	if err := d.fetchMissingExchangeRates(ctx, exchangeRates, trades); err != nil {
 		d.logger.Warn("failed to fetch missing exchange rates", "error", err)
 	}
-	exchangeRatesProto := &exchangeratev1.ExchangeRates{ExchangeRates: exchangeRates}
 	exchangeRatesPath := filepath.Join(dataDirV1, "exchange_rates.json")
-	if err := cli.WriteProtoMessageJSON(exchangeRatesPath, exchangeRatesProto); err != nil {
+	if err := protoio.WriteMessagesJSON(exchangeRatesPath, exchangeRates); err != nil {
 		return fmt.Errorf("writing exchange rates: %w", err)
 	}
 	d.logger.Info("exchange rates written", "count", len(exchangeRates), "path", exchangeRatesPath)
 
-	// Step 7: Compute tax lots and write tax_lots.json.
+	// Step 6: Compute tax lots and write tax_lots.json (newline-separated).
 	taxLots, err := ibctltaxlot.ComputeTaxLots(trades)
 	if err != nil {
 		return fmt.Errorf("computing tax lots: %w", err)
 	}
-	taxLotsProto := &taxlotv1.TaxLots{TaxLots: taxLots}
 	taxLotsPath := filepath.Join(dataDirV1, "tax_lots.json")
-	if err := cli.WriteProtoMessageJSON(taxLotsPath, taxLotsProto); err != nil {
+	if err := protoio.WriteMessagesJSON(taxLotsPath, taxLots); err != nil {
 		return fmt.Errorf("writing tax lots: %w", err)
 	}
 	d.logger.Info("tax lots written", "count", len(taxLots), "path", taxLotsPath)
 
-	// Step 8: Compute positions from tax lots.
+	// Step 7: Compute positions from tax lots.
 	computedPositions := ibctltaxlot.ComputePositions(taxLots)
 
-	// Step 9: Verify computed vs IBKR-reported positions.
+	// Step 8: Verify computed vs IBKR-reported positions.
 	verificationNotes := ibctltaxlot.VerifyPositions(computedPositions, positions)
 	positionsVerified := len(verificationNotes) == 0
 	if !positionsVerified {
@@ -170,14 +136,14 @@ func (d *downloader) Download(ctx context.Context) error {
 		d.logger.Info("all positions verified successfully")
 	}
 
-	// Step 10: Write metadata.json.
-	metadata := &metadatav1.Metadata{
-		DownloadTime:      time.Now().Format(time.RFC3339),
+	// Step 9: Write metadata.json.
+	metadata := &datav1.Metadata{
+		DownloadTime:      timestamppb.Now(),
 		PositionsVerified: positionsVerified,
 		VerificationNotes: verificationNotes,
 	}
 	metadataPath := filepath.Join(dataDirV1, "metadata.json")
-	if err := cli.WriteProtoMessageJSON(metadataPath, metadata); err != nil {
+	if err := protoio.WriteMessageJSON(metadataPath, metadata); err != nil {
 		return fmt.Errorf("writing metadata: %w", err)
 	}
 	d.logger.Info("download complete", "positions_verified", positionsVerified)
@@ -185,8 +151,8 @@ func (d *downloader) Download(ctx context.Context) error {
 }
 
 // convertTrades converts XML trades to proto trades.
-func (d *downloader) convertTrades(xmlTrades []flexquery.XMLTrade) ([]*tradev1.Trade, error) {
-	trades := make([]*tradev1.Trade, 0, len(xmlTrades))
+func (d *downloader) convertTrades(xmlTrades []ibkrflexquery.XMLTrade) ([]*datav1.Trade, error) {
+	trades := make([]*datav1.Trade, 0, len(xmlTrades))
 	for i := range xmlTrades {
 		trade, err := xmlTradeToProto(&xmlTrades[i])
 		if err != nil {
@@ -198,8 +164,8 @@ func (d *downloader) convertTrades(xmlTrades []flexquery.XMLTrade) ([]*tradev1.T
 }
 
 // convertPositions converts XML positions to proto positions.
-func (d *downloader) convertPositions(xmlPositions []flexquery.XMLPosition) ([]*positionv1.Position, error) {
-	positions := make([]*positionv1.Position, 0, len(xmlPositions))
+func (d *downloader) convertPositions(xmlPositions []ibkrflexquery.XMLPosition) ([]*datav1.Position, error) {
+	positions := make([]*datav1.Position, 0, len(xmlPositions))
 	for i := range xmlPositions {
 		position, err := xmlPositionToProto(&xmlPositions[i])
 		if err != nil {
@@ -211,7 +177,7 @@ func (d *downloader) convertPositions(xmlPositions []flexquery.XMLPosition) ([]*
 }
 
 // extractExchangeRates extracts FX rates from cash transactions.
-func (d *downloader) extractExchangeRates(cashTransactions []flexquery.XMLCashTransaction) []*exchangeratev1.ExchangeRate {
+func (d *downloader) extractExchangeRates(cashTransactions []ibkrflexquery.XMLCashTransaction) []*datav1.ExchangeRate {
 	// Use a set to avoid duplicate rates for the same date/currency pair.
 	type rateKey struct {
 		date          string
@@ -219,7 +185,7 @@ func (d *downloader) extractExchangeRates(cashTransactions []flexquery.XMLCashTr
 		quoteCurrency string
 	}
 	seen := make(map[rateKey]bool)
-	var rates []*exchangeratev1.ExchangeRate
+	var rates []*datav1.ExchangeRate
 	for _, ct := range cashTransactions {
 		if ct.FxRateToBase == "" || ct.FxRateToBase == "1" {
 			continue
@@ -246,11 +212,18 @@ func (d *downloader) extractExchangeRates(cashTransactions []flexquery.XMLCashTr
 		if err != nil {
 			continue
 		}
-		rates = append(rates, &exchangeratev1.ExchangeRate{
-			Date:          protoDate,
-			BaseCurrency:  ct.Currency,
-			QuoteCurrency: "USD",
-			Rate:          ct.FxRateToBase,
+		// Parse the FX rate string into units and micros using a dummy Money.
+		rateMoney, err := moneypb.NewProtoMoney("USD", ct.FxRateToBase)
+		if err != nil {
+			continue
+		}
+		rates = append(rates, &datav1.ExchangeRate{
+			Date:              protoDate,
+			BaseCurrencyCode:  ct.Currency,
+			QuoteCurrencyCode: "USD",
+			RateUnits:         rateMoney.GetUnits(),
+			RateMicros:        rateMoney.GetMicros(),
+			Provider:          "ibkr",
 		})
 	}
 	// Sort by date for deterministic output.
@@ -264,7 +237,7 @@ func (d *downloader) extractExchangeRates(cashTransactions []flexquery.XMLCashTr
 
 // fetchMissingExchangeRates uses the frankfurter.dev API as a fallback for any dates
 // that have trades in non-USD currencies but no FX rate from IBKR.
-func (d *downloader) fetchMissingExchangeRates(ctx context.Context, existingRates []*exchangeratev1.ExchangeRate, trades []*tradev1.Trade) error {
+func (d *downloader) fetchMissingExchangeRates(ctx context.Context, existingRates []*datav1.ExchangeRate, trades []*datav1.Trade) error {
 	// Build set of existing rate dates.
 	type rateKey struct {
 		date     string
@@ -273,23 +246,23 @@ func (d *downloader) fetchMissingExchangeRates(ctx context.Context, existingRate
 	existingSet := make(map[rateKey]bool)
 	for _, rate := range existingRates {
 		dateStr := fmt.Sprintf("%04d-%02d-%02d", rate.GetDate().GetYear(), rate.GetDate().GetMonth(), rate.GetDate().GetDay())
-		existingSet[rateKey{date: dateStr, currency: rate.GetBaseCurrency()}] = true
+		existingSet[rateKey{date: dateStr, currency: rate.GetBaseCurrencyCode()}] = true
 	}
 	// Find trade dates with non-USD currencies that don't have FX rates.
 	missingDates := make(map[string]map[string]bool) // currency -> set of dates
 	for _, trade := range trades {
-		if trade.GetCurrency() == "USD" {
+		if trade.GetCurrencyCode() == "USD" {
 			continue
 		}
 		dateStr := fmt.Sprintf("%04d-%02d-%02d", trade.GetTradeDate().GetYear(), trade.GetTradeDate().GetMonth(), trade.GetTradeDate().GetDay())
-		key := rateKey{date: dateStr, currency: trade.GetCurrency()}
+		key := rateKey{date: dateStr, currency: trade.GetCurrencyCode()}
 		if existingSet[key] {
 			continue
 		}
-		if missingDates[trade.GetCurrency()] == nil {
-			missingDates[trade.GetCurrency()] = make(map[string]bool)
+		if missingDates[trade.GetCurrencyCode()] == nil {
+			missingDates[trade.GetCurrencyCode()] = make(map[string]bool)
 		}
-		missingDates[trade.GetCurrency()][dateStr] = true
+		missingDates[trade.GetCurrencyCode()][dateStr] = true
 	}
 	if len(missingDates) == 0 {
 		return nil
@@ -323,13 +296,135 @@ func (d *downloader) fetchMissingExchangeRates(ctx context.Context, existingRate
 			if err != nil {
 				continue
 			}
-			existingRates = append(existingRates, &exchangeratev1.ExchangeRate{
-				Date:          protoDate,
-				BaseCurrency:  currency,
-				QuoteCurrency: "USD",
-				Rate:          rate,
+			// Parse the FX rate string into units and micros using a dummy Money.
+			rateMoney, err := moneypb.NewProtoMoney("USD", rate)
+			if err != nil {
+				continue
+			}
+			existingRates = append(existingRates, &datav1.ExchangeRate{
+				Date:              protoDate,
+				BaseCurrencyCode:  currency,
+				QuoteCurrencyCode: "USD",
+				RateUnits:         rateMoney.GetUnits(),
+				RateMicros:        rateMoney.GetMicros(),
+				Provider:          "frankfurter",
 			})
 		}
 	}
 	return nil
+}
+
+// xmlTradeToProto converts an XML trade from the Flex Query response to a proto Trade.
+func xmlTradeToProto(xmlTrade *ibkrflexquery.XMLTrade) (*datav1.Trade, error) {
+	// Parse the trade date (format: YYYYMMDD).
+	tradeDate, err := parseIBKRDate(xmlTrade.TradeDate)
+	if err != nil {
+		return nil, fmt.Errorf("parsing trade date %q: %w", xmlTrade.TradeDate, err)
+	}
+	protoTradeDate, err := timepb.NewProtoDate(tradeDate.Year(), tradeDate.Month(), tradeDate.Day())
+	if err != nil {
+		return nil, err
+	}
+	// Parse the settle date (format: YYYYMMDD).
+	settleDate, err := parseIBKRDate(xmlTrade.SettleDateTarget)
+	if err != nil {
+		return nil, fmt.Errorf("parsing settle date %q: %w", xmlTrade.SettleDateTarget, err)
+	}
+	protoSettleDate, err := timepb.NewProtoDate(settleDate.Year(), settleDate.Month(), settleDate.Day())
+	if err != nil {
+		return nil, err
+	}
+	// Parse numeric fields using the Money proto helper.
+	currencyCode := xmlTrade.Currency
+	tradePrice, err := moneypb.NewProtoMoney(currencyCode, xmlTrade.TradePrice)
+	if err != nil {
+		return nil, fmt.Errorf("parsing trade price: %w", err)
+	}
+	proceeds, err := moneypb.NewProtoMoney(currencyCode, xmlTrade.Proceeds)
+	if err != nil {
+		return nil, fmt.Errorf("parsing proceeds: %w", err)
+	}
+	commission, err := moneypb.NewProtoMoney(currencyCode, xmlTrade.IBCommission)
+	if err != nil {
+		return nil, fmt.Errorf("parsing commission: %w", err)
+	}
+	fifoPnlRealized, err := moneypb.NewProtoMoney(currencyCode, xmlTrade.FifoPnlRealized)
+	if err != nil {
+		return nil, fmt.Errorf("parsing fifo pnl realized: %w", err)
+	}
+	// Parse the quantity as an integer.
+	quantity, err := strconv.ParseInt(xmlTrade.Quantity, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parsing quantity %q: %w", xmlTrade.Quantity, err)
+	}
+	return &datav1.Trade{
+		TradeId:         xmlTrade.TradeID,
+		TradeDate:       protoTradeDate,
+		SettleDate:      protoSettleDate,
+		Symbol:          xmlTrade.Symbol,
+		Description:     xmlTrade.Description,
+		AssetCategory:   xmlTrade.AssetCategory,
+		Side:            parseTradeSide(xmlTrade.BuySell),
+		Quantity:        quantity,
+		TradePrice:      tradePrice,
+		Proceeds:        proceeds,
+		Commission:      commission,
+		CurrencyCode:    currencyCode,
+		FifoPnlRealized: fifoPnlRealized,
+	}, nil
+}
+
+// xmlPositionToProto converts an XML position from the Flex Query response to a proto Position.
+func xmlPositionToProto(xmlPosition *ibkrflexquery.XMLPosition) (*datav1.Position, error) {
+	currencyCode := xmlPosition.Currency
+	// Parse numeric fields using the Money proto helper.
+	costBasisPrice, err := moneypb.NewProtoMoney(currencyCode, xmlPosition.CostBasisPrice)
+	if err != nil {
+		return nil, fmt.Errorf("parsing cost basis price: %w", err)
+	}
+	marketPrice, err := moneypb.NewProtoMoney(currencyCode, xmlPosition.MarkPrice)
+	if err != nil {
+		return nil, fmt.Errorf("parsing market price: %w", err)
+	}
+	marketValue, err := moneypb.NewProtoMoney(currencyCode, xmlPosition.PositionValue)
+	if err != nil {
+		return nil, fmt.Errorf("parsing market value: %w", err)
+	}
+	fifoPnlUnrealized, err := moneypb.NewProtoMoney(currencyCode, xmlPosition.FifoPnlUnrealized)
+	if err != nil {
+		return nil, fmt.Errorf("parsing fifo pnl unrealized: %w", err)
+	}
+	// Parse the quantity as an integer.
+	quantity, err := strconv.ParseInt(xmlPosition.Quantity, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("parsing quantity %q: %w", xmlPosition.Quantity, err)
+	}
+	return &datav1.Position{
+		Symbol:            xmlPosition.Symbol,
+		Description:       xmlPosition.Description,
+		AssetCategory:     xmlPosition.AssetCategory,
+		Quantity:          quantity,
+		CostBasisPrice:    costBasisPrice,
+		MarketPrice:       marketPrice,
+		MarketValue:       marketValue,
+		FifoPnlUnrealized: fifoPnlUnrealized,
+		CurrencyCode:      currencyCode,
+	}, nil
+}
+
+// parseTradeSide converts an IBKR buy/sell string to a TradeSide enum value.
+func parseTradeSide(s string) datav1.TradeSide {
+	switch s {
+	case "BUY":
+		return datav1.TradeSide_TRADE_SIDE_BUY
+	case "SELL":
+		return datav1.TradeSide_TRADE_SIDE_SELL
+	default:
+		return datav1.TradeSide_TRADE_SIDE_UNSPECIFIED
+	}
+}
+
+// parseIBKRDate parses an IBKR date string in YYYYMMDD format.
+func parseIBKRDate(s string) (time.Time, error) {
+	return time.Parse("20060102", s)
 }

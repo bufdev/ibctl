@@ -30,19 +30,6 @@ func NewProtoMoney(currencyCode string, value string) (*moneyv1.Money, error) {
 	}, nil
 }
 
-// MoneyTimes multiplies a Money value by a given factor and returns a new Money.
-func MoneyTimes(money *moneyv1.Money, factor int64) *moneyv1.Money {
-	// Convert to total micros, multiply, convert back.
-	totalMicros := MoneyToMicros(money) * factor
-	units := totalMicros / microsFactor
-	micros := totalMicros % microsFactor
-	return &moneyv1.Money{
-		CurrencyCode: money.GetCurrencyCode(),
-		Units:        units,
-		Micros:       micros,
-	}
-}
-
 // MoneyValueToString converts a Money proto to a decimal string representation.
 func MoneyValueToString(money *moneyv1.Money) string {
 	totalMicros := MoneyToMicros(money)
@@ -136,6 +123,13 @@ func parseDecimalToUnitsMicros(value string) (int64, int64, error) {
 	return units, micros, nil
 }
 
+// MoneyTimes multiplies a Money value by a given factor and returns a new Money.
+func MoneyTimes(money *moneyv1.Money, factor int64) *moneyv1.Money {
+	// Convert to total micros, multiply, convert back.
+	totalMicros := MoneyToMicros(money) * factor
+	return MoneyFromMicros(money.GetCurrencyCode(), totalMicros)
+}
+
 // MoneyAdd adds two Money values with the same currency and returns a new Money.
 func MoneyAdd(a, b *moneyv1.Money) *moneyv1.Money {
 	totalMicros := MoneyToMicros(a) + MoneyToMicros(b)
@@ -143,10 +137,9 @@ func MoneyAdd(a, b *moneyv1.Money) *moneyv1.Money {
 }
 
 // MoneyDivide divides a Money value by a divisor and returns a new Money.
-// Uses integer division with rounding toward zero.
+// Rounds to nearest rather than truncating.
 func MoneyDivide(money *moneyv1.Money, divisor int64) *moneyv1.Money {
 	totalMicros := MoneyToMicros(money)
-	// Round to nearest rather than truncate.
 	result := int64(math.Round(float64(totalMicros) / float64(divisor)))
 	return MoneyFromMicros(money.GetCurrencyCode(), result)
 }

@@ -4,12 +4,14 @@
 
 syntax = "proto3";
 
-package ibctl.metadata.v1;
+package ibctl.data.v1;
+
+import "google/protobuf/timestamp.proto";
 
 // Metadata stores information about the most recent data download.
 message Metadata {
-  // The timestamp of the download in RFC3339 format.
-  string download_time = 1;
+  // The timestamp of the download.
+  google.protobuf.Timestamp download_time = 1;
   // Whether the computed positions matched the IBKR-reported positions.
   bool positions_verified = 2;
   // Descriptions of any discrepancies found during verification.

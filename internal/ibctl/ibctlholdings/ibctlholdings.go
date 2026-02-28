@@ -11,12 +11,11 @@ import (
 	"sort"
 	"strconv"
 
-	positionv1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/position/v1"
-	taxlotv1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/taxlot/v1"
+	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctltaxlot"
-	"github.com/bufdev/ibctl/internal/pkg/cli"
 	"github.com/bufdev/ibctl/internal/pkg/moneypb"
+	"github.com/bufdev/ibctl/internal/pkg/protoio"
 )
 
 // HoldingOverview represents a single holding for display.
@@ -56,29 +55,28 @@ func HoldingOverviewToRow(h *HoldingOverview) []string {
 }
 
 // GetHoldingsOverview reads cached data and computes the holdings overview.
-func GetHoldingsOverview(config *ibctlconfig.Config) ([]*HoldingOverview, error) {
-	dataDirV1 := config.DataDirV1Path()
-
-	// Read tax lots from cache.
-	var taxLotsProto taxlotv1.TaxLots
-	taxLotsPath := filepath.Join(dataDirV1, "tax_lots.json")
-	if err := cli.ReadProtoMessageJSON(taxLotsPath, &taxLotsProto); err != nil {
+// The dataDirV1Path is the versioned data directory (e.g., ~/.local/share/ibctl/v1).
+func GetHoldingsOverview(dataDirV1Path string, config *ibctlconfig.Config) ([]*HoldingOverview, error) {
+	// Read tax lots from cache (newline-separated proto JSON).
+	taxLotsPath := filepath.Join(dataDirV1Path, "tax_lots.json")
+	taxLots, err := protoio.ReadMessagesJSON(taxLotsPath, func() *datav1.TaxLot { return &datav1.TaxLot{} })
+	if err != nil {
 		return nil, fmt.Errorf("reading tax lots: %w", err)
 	}
 
-	// Read positions from cache (for market prices).
-	var positionsProto positionv1.Positions
-	positionsPath := filepath.Join(dataDirV1, "positions.json")
-	if err := cli.ReadProtoMessageJSON(positionsPath, &positionsProto); err != nil {
+	// Read positions from cache (newline-separated proto JSON, for market prices).
+	positionsPath := filepath.Join(dataDirV1Path, "positions.json")
+	positions, err := protoio.ReadMessagesJSON(positionsPath, func() *datav1.Position { return &datav1.Position{} })
+	if err != nil {
 		return nil, fmt.Errorf("reading positions: %w", err)
 	}
 
 	// Compute positions from tax lots (for average cost basis).
-	computedPositions := ibctltaxlot.ComputePositions(taxLotsProto.GetTaxLots())
+	computedPositions := ibctltaxlot.ComputePositions(taxLots)
 
 	// Build a map of market prices from IBKR-reported positions.
-	marketPrices := make(map[string]string, len(positionsProto.GetPositions()))
-	for _, pos := range positionsProto.GetPositions() {
+	marketPrices := make(map[string]string, len(positions))
+	for _, pos := range positions {
 		marketPrices[pos.GetSymbol()] = moneypb.MoneyValueToString(pos.GetMarketPrice())
 	}
 

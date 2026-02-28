@@ -1,0 +1,70 @@
+// Copyright 2026 Peter Edge
+//
+// All rights reserved.
+
+syntax = "proto3";
+
+package ibctl.data.v1;
+
+import "buf/validate/validate.proto";
+import "standard/money/v1/money.proto";
+import "standard/time/v1/date.proto";
+
+// TradeSide indicates whether a trade is a buy or a sell.
+enum TradeSide {
+  TRADE_SIDE_UNSPECIFIED = 0;
+  TRADE_SIDE_BUY = 1;
+  TRADE_SIDE_SELL = 2;
+}
+
+// Trade represents a single trade execution from IBKR.
+message Trade {
+  option (buf.validate.message).cel = {
+    id: "trade_price_currency"
+    message: "trade_price currency_code must match trade currency_code"
+    expression: "this.trade_price.currency_code == this.currency_code"
+  };
+  option (buf.validate.message).cel = {
+    id: "proceeds_currency"
+    message: "proceeds currency_code must match trade currency_code"
+    expression: "this.proceeds.currency_code == this.currency_code"
+  };
+  option (buf.validate.message).cel = {
+    id: "commission_currency"
+    message: "commission currency_code must match trade currency_code"
+    expression: "this.commission.currency_code == this.currency_code"
+  };
+  option (buf.validate.message).cel = {
+    id: "fifo_pnl_realized_currency"
+    message: "fifo_pnl_realized currency_code must match trade currency_code"
+    expression: "!has(this.fifo_pnl_realized) || this.fifo_pnl_realized.currency_code == this.currency_code"
+  };
+
+  // The unique trade identifier from IBKR.
+  string trade_id = 1 [(buf.validate.field).required = true];
+  // The date the trade was executed.
+  standard.time.v1.Date trade_date = 2 [(buf.validate.field).required = true];
+  // The date the trade was settled.
+  standard.time.v1.Date settle_date = 3 [(buf.validate.field).required = true];
+  // The ticker symbol.
+  string symbol = 4 [(buf.validate.field).required = true];
+  // The security description.
+  string description = 5;
+  // The asset category (e.g., "STK", "OPT").
+  string asset_category = 6 [(buf.validate.field).required = true];
+  // Whether this trade is a buy or a sell.
+  TradeSide side = 7 [(buf.validate.field).enum.not_in = 0];
+  // The number of shares or contracts traded.
+  int64 quantity = 8;
+  // The price per share or contract.
+  standard.money.v1.Money trade_price = 9 [(buf.validate.field).required = true];
+  // The total trade proceeds.
+  standard.money.v1.Money proceeds = 10 [(buf.validate.field).required = true];
+  // The commission paid for this trade.
+  standard.money.v1.Money commission = 11 [(buf.validate.field).required = true];
+  // The three-letter ISO 4217 currency code for this trade.
+  // All Money fields must use this same currency code.
+  string currency_code = 12 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
+  // The realized P&L computed by IBKR using FIFO.
+  standard.money.v1.Money fifo_pnl_realized = 13;
+}

@@ -22,7 +22,7 @@ message Money {
   };
 
   // The three-letter ISO 4217 currency code (e.g., "USD").
-  string currency_code = 1 [(buf.validate.field).string.len = 3];
+  string currency_code = 1 [(buf.validate.field).string.pattern = "^[A-Z]{3}$"];
   // The whole units.
   //
   // Example: If currency_code is USD, $1 is represented with 1 unit.

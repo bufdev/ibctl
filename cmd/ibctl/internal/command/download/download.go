@@ -7,66 +7,53 @@ package download
 
 import (
 	"context"
-	"log/slog"
+	"errors"
 
 	"buf.build/go/app/appcmd"
 	"buf.build/go/app/appext"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctldownload"
-	"github.com/spf13/pflag"
+	"github.com/bufdev/ibctl/internal/pkg/frankfurter"
+	"github.com/bufdev/ibctl/internal/pkg/ibkrflexquery"
 )
 
-// configFlagName is the flag name for the configuration file path.
-const configFlagName = "config"
+// ibkrTokenEnvVar is the environment variable name for the IBKR Flex Web Service token.
+const ibkrTokenEnvVar = "IBKR_TOKEN"
 
 // NewCommand returns a new download command that downloads and caches IBKR data.
 func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
-	flags := newFlags()
 	return &appcmd.Command{
 		Use:   name,
 		Short: "Download and cache IBKR data via Flex Query API",
 		Args:  appcmd.NoArgs,
 		Run: builder.NewRunFunc(
 			func(ctx context.Context, container appext.Container) error {
-				return run(ctx, container, flags)
+				return run(ctx, container)
 			},
 		),
-		BindFlags: flags.Bind,
 	}
 }
 
-type flags struct {
-	// Config is the path to the configuration file.
-	Config string
-}
-
-func newFlags() *flags {
-	return &flags{}
-}
-
-// Bind registers the flag definitions with the given flag set.
-func (f *flags) Bind(flagSet *pflag.FlagSet) {
-	flagSet.StringVar(
-		&f.Config,
-		configFlagName,
-		"ibctl.yaml",
-		"The configuration file path",
-	)
-}
-
-func run(ctx context.Context, _ appext.Container, flags *flags) error {
-	if flags.Config == "" {
-		return appcmd.NewInvalidArgumentErrorf("--%s is required", configFlagName)
-	}
-	config, err := ibctlconfig.ReadConfig(flags.Config)
+func run(ctx context.Context, container appext.Container) error {
+	// Read and validate the configuration file.
+	config, err := ibctlconfig.ReadConfig(container.ConfigDirPath())
 	if err != nil {
 		return err
 	}
-	// Create the downloader with default clients and run the download pipeline.
-	logger := slog.Default()
-	downloader := ibctldownload.NewDownloader(
-		config,
-		ibctldownload.WithLogger(logger),
-	)
+	// Read the IBKR token from the environment via the app container.
+	ibkrToken := container.Env(ibkrTokenEnvVar)
+	if ibkrToken == "" {
+		return errors.New("IBKR_TOKEN environment variable is required")
+	}
+	// Compute the versioned data directory path.
+	dataDirV1Path := ibctlconfig.DataDirV1Path(container.DataDirPath())
+	// Extract the logger from the appext container.
+	logger := container.Logger()
+	// Construct the IBKR Flex Query client with the logger.
+	flexQueryClient := ibkrflexquery.NewClient(logger)
+	// Construct the FX rate client.
+	fxRateClient := frankfurter.NewClient()
+	// Create the downloader with all required dependencies.
+	downloader := ibctldownload.NewDownloader(logger, ibkrToken, dataDirV1Path, config, flexQueryClient, fxRateClient)
 	return downloader.Download(ctx)
 }

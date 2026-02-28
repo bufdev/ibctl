@@ -22,8 +22,14 @@ func main() {
 func newRootCommand(name string) *appcmd.Command {
 	builder := appext.NewBuilder(name)
 	return &appcmd.Command{
-		Use:                 name,
-		Short:               "Analyze Interactive Brokers holdings and trades",
+		Use:   name,
+		Short: "Analyze Interactive Brokers holdings and trades",
+		Long: `Analyze Interactive Brokers holdings and trades.
+
+Configuration: ~/.config/ibctl/config.yaml (override with IBCTL_CONFIG_DIR)
+Data:          ~/.local/share/ibctl        (override with IBCTL_DATA_DIR)
+
+Run "ibctl config init" to create a configuration file.`,
 		BindPersistentFlags: builder.BindRoot,
 		SubCommands: []*appcmd.Command{
 			config.NewCommand("config", builder),
