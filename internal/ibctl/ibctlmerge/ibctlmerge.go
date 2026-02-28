@@ -4,6 +4,7 @@
 
 // Package ibctlmerge merges trade data from Activity Statement CSVs (seed data)
 // and the Flex Query cache (supplement) into a unified view for commands to use.
+// Data is organized per account using account aliases.
 package ibctlmerge
 
 import (
@@ -22,24 +23,40 @@ import (
 	"github.com/bufdev/ibctl/internal/pkg/timepb"
 )
 
-// MergedData contains all trade data merged from Activity Statement CSVs and Flex Query cache.
+// MergedData contains all data merged from Activity Statement CSVs and Flex Query cache
+// across all accounts.
 type MergedData struct {
-	// Trades is the deduplicated, sorted list of all trades.
+	// Trades is the deduplicated, sorted list of all trades across all accounts.
 	Trades []*datav1.Trade
-	// Positions is the most recent set of open positions (from Flex Query cache if available,
-	// otherwise from the most recent Activity Statement CSV).
+	// Positions is the most recent set of open positions across all accounts.
 	Positions []*datav1.Position
+	// Transfers is the list of position transfers across all accounts.
+	Transfers []*datav1.Transfer
+	// TradeTransfers is the list of transferred trade cost basis records across all accounts.
+	TradeTransfers []*datav1.TradeTransfer
+	// CorporateActions is the list of corporate action events across all accounts.
+	CorporateActions []*datav1.CorporateAction
 }
 
-// Merge reads Activity Statement CSVs and Flex Query cached data, deduplicates trades
-// by a composite key (Symbol + DateTime + Quantity + Price), and returns the merged result.
-// The flexCacheDirPath may be empty if no Flex Query data has been downloaded yet.
-func Merge(csvStatements []*ibkractivitycsv.ActivityStatement, flexCacheDirPath string) (*MergedData, error) {
-	// Load Flex Query cached trades first (these are the baseline).
+// Merge reads Activity Statement CSVs and Flex Query cached data for all accounts,
+// deduplicates trades, and returns the merged result.
+// The dataDirV1Path is the versioned data directory containing per-account subdirectories.
+// The accountAliases map contains alias → account ID mappings from config.
+func Merge(
+	csvStatements []*ibkractivitycsv.ActivityStatement,
+	dataDirV1Path string,
+	accountAliases map[string]string,
+) (*MergedData, error) {
 	tradeMap := make(map[string]*datav1.Trade)
-	var flexPositions []*datav1.Position
-	if flexCacheDirPath != "" {
-		tradesPath := filepath.Join(flexCacheDirPath, "trades.json")
+	var allPositions []*datav1.Position
+	var allTransfers []*datav1.Transfer
+	var allTradeTransfers []*datav1.TradeTransfer
+	var allCorporateActions []*datav1.CorporateAction
+	// Load Flex Query cached data per account.
+	for alias := range accountAliases {
+		accountDir := filepath.Join(dataDirV1Path, alias)
+		// Read trades for this account.
+		tradesPath := filepath.Join(accountDir, "trades.json")
 		cachedTrades, err := protoio.ReadMessagesJSON(tradesPath, func() *datav1.Trade { return &datav1.Trade{} })
 		if err == nil {
 			for _, trade := range cachedTrades {
@@ -47,19 +64,38 @@ func Merge(csvStatements []*ibkractivitycsv.ActivityStatement, flexCacheDirPath 
 				tradeMap[key] = trade
 			}
 		}
-		// Read Flex Query positions as baseline.
-		positionsPath := filepath.Join(flexCacheDirPath, "positions.json")
-		flexPos, err := protoio.ReadMessagesJSON(positionsPath, func() *datav1.Position { return &datav1.Position{} })
+		// Read positions for this account.
+		positionsPath := filepath.Join(accountDir, "positions.json")
+		positions, err := protoio.ReadMessagesJSON(positionsPath, func() *datav1.Position { return &datav1.Position{} })
 		if err == nil {
-			flexPositions = flexPos
+			allPositions = append(allPositions, positions...)
+		}
+		// Read transfers for this account.
+		transfersPath := filepath.Join(accountDir, "transfers.json")
+		transfers, err := protoio.ReadMessagesJSON(transfersPath, func() *datav1.Transfer { return &datav1.Transfer{} })
+		if err == nil {
+			allTransfers = append(allTransfers, transfers...)
+		}
+		// Read trade transfers for this account.
+		tradeTransfersPath := filepath.Join(accountDir, "trade_transfers.json")
+		tradeTransfers, err := protoio.ReadMessagesJSON(tradeTransfersPath, func() *datav1.TradeTransfer { return &datav1.TradeTransfer{} })
+		if err == nil {
+			allTradeTransfers = append(allTradeTransfers, tradeTransfers...)
+		}
+		// Read corporate actions for this account.
+		corporateActionsPath := filepath.Join(accountDir, "corporate_actions.json")
+		corporateActions, err := protoio.ReadMessagesJSON(corporateActionsPath, func() *datav1.CorporateAction { return &datav1.CorporateAction{} })
+		if err == nil {
+			allCorporateActions = append(allCorporateActions, corporateActions...)
 		}
 	}
 	// Merge in Activity Statement CSV trades on top — CSV data takes precedence
-	// over Flex Query data since the user manages the CSVs directly and may
-	// download updated statements that supersede cached API data.
+	// over Flex Query data since the user manages the CSVs directly.
 	var csvPositions []*datav1.Position
 	for _, statement := range csvStatements {
 		for i := range statement.Trades {
+			// CSV trades don't have account IDs — they'll need to be mapped
+			// via the activity_statements_dir subdirectory structure.
 			trade, err := csvTradeToProto(&statement.Trades[i])
 			if err != nil {
 				continue // Skip unparseable trades.
@@ -90,15 +126,18 @@ func Merge(csvStatements []*ibkractivitycsv.ActivityStatement, flexCacheDirPath 
 		}
 		return trades[i].GetTradeId() < trades[j].GetTradeId()
 	})
-	// Prefer CSV positions over Flex Query positions (user-managed data takes precedence).
-	// Fall back to Flex Query positions if no CSVs are configured.
-	positions := csvPositions
-	if len(positions) == 0 {
-		positions = flexPositions
+	// Merge positions: use CSV positions for accounts that have them, otherwise use Flex Query.
+	// If CSV positions exist, they take precedence.
+	positions := allPositions
+	if len(csvPositions) > 0 {
+		positions = csvPositions
 	}
 	return &MergedData{
-		Trades:    trades,
-		Positions: positions,
+		Trades:           trades,
+		Positions:        positions,
+		Transfers:        allTransfers,
+		TradeTransfers:   allTradeTransfers,
+		CorporateActions: allCorporateActions,
 	}, nil
 }
 
@@ -181,13 +220,19 @@ func csvPositionToProto(csvPosition *ibkractivitycsv.Position) (*datav1.Position
 
 // tradeKey generates a deterministic dedup key for a trade proto.
 // Uses TradeId if available (Flex Query trades), otherwise Symbol+Date+Quantity+Price.
+// Includes account_id in the key so trades from different accounts don't collide.
 func tradeKey(trade *datav1.Trade) string {
+	accountPrefix := trade.GetAccountId()
+	if accountPrefix == "" {
+		accountPrefix = "unknown"
+	}
 	if trade.GetTradeId() != "" && !strings.HasPrefix(trade.GetTradeId(), "csv-") {
-		// Flex Query trades have real IBKR trade IDs.
-		return "ibkr-" + trade.GetTradeId()
+		// Flex Query trades have real IBKR trade IDs, scoped per account.
+		return fmt.Sprintf("%s-ibkr-%s", accountPrefix, trade.GetTradeId())
 	}
 	// CSV-derived trades use composite key.
-	return fmt.Sprintf("csv-%s-%s-%s-%s",
+	return fmt.Sprintf("%s-csv-%s-%s-%s-%s",
+		accountPrefix,
 		trade.GetSymbol(),
 		protoDateString(trade.GetTradeDate()),
 		mathpb.ToString(trade.GetQuantity()),

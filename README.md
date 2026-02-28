@@ -1,6 +1,6 @@
 # ibctl
 
-A CLI tool for analyzing Interactive Brokers (IBKR) holdings and trades. Downloads data via the IBKR Flex Query API, computes FIFO tax lots, and displays holdings with average prices and positions.
+A CLI tool for analyzing Interactive Brokers (IBKR) holdings and trades. Downloads data via the IBKR Flex Query API, computes FIFO tax lots, and displays holdings with average prices and positions. Supports multiple IBKR accounts with per-account data storage.
 
 ## Prerequisites
 
@@ -17,10 +17,13 @@ Follow these exact steps in the IBKR portal to create a Flex Query and generate 
 2. Navigate to **Performance & Reports** > **Flex Queries**.
 3. In the **Activity Flex Query** section, click the **+** button in the top right corner of the panel.
 4. Set the **Query Name** to something descriptive (e.g., "ibctl").
-5. Under **Sections**, add the following three sections, selecting all fields for each:
+5. Under **Sections**, add the following sections, selecting all fields for each:
    - **Trades**
    - **Open Positions**
    - **Cash Transactions** (used for FX rate extraction)
+   - **Transfers (ACATS, Internal)** (captures positions transferred from other brokers)
+   - **Incoming/Outgoing Trade Transfers** (preserves cost basis and holding period for transferred positions)
+   - **Corporate Actions** (captures stock splits, mergers, spinoffs)
 6. Under **Delivery Configuration**, set:
    - **Format**: `XML`
    - **Period**: `Last 365 Calendar Days` (this is the maximum; see note below about older history)
@@ -49,7 +52,7 @@ Follow these exact steps in the IBKR portal to create a Flex Query and generate 
 | Path | Purpose | Override |
 |------|---------|----------|
 | `ibctl.yaml` | Configuration file in current directory | `--config` flag |
-| `<data_dir>/v1/` | Downloaded data cache | Set `data_dir` in config |
+| `<data_dir>/v1/<account>/` | Per-account downloaded data cache | Set `data_dir` and `accounts` in config |
 
 ## Environment Variables
 
@@ -65,7 +68,7 @@ Follow these exact steps in the IBKR portal to create a Flex Query and generate 
 ibctl config init
 ```
 
-This creates a new `config.yaml` in the configuration directory and prints the file path. Edit it to fill in your Flex Query ID and optional symbol classifications.
+This creates a new `ibctl.yaml` in the current directory. Edit it to fill in your Flex Query ID, account mappings, and optional symbol classifications.
 
 ### Edit Configuration
 
@@ -84,6 +87,14 @@ version: v1
 data_dir: ~/Documents/ibctl
 # The Flex Query ID (required, visible next to your query in IBKR portal).
 flex_query_id: "123456"
+# Account aliases mapping (required).
+# Maps user-chosen aliases to IBKR account IDs.
+# Account numbers are confidential — aliases are used in output and directory names.
+# Aliases must be lowercase alphanumeric with hyphens.
+accounts:
+  rrsp: "U1234567"
+  holdco: "U2345678"
+  individual: "U3456789"
 # Directory containing IBKR Activity Statement CSVs (required).
 # Organize by account subdirectory. See "Seeding Historical Data" below.
 activity_statements_dir: ~/Documents/ibkr-statements
@@ -111,16 +122,19 @@ ibctl config validate
 # Set the IBKR token.
 export IBKR_FLEX_WEB_SERVICE_TOKEN="your-flex-web-service-token"
 
-# View holdings overview (downloads data automatically if not cached).
+# View combined holdings overview (downloads data automatically if not cached).
 ibctl holdings overview
 ibctl holdings overview --format csv
 ibctl holdings overview --format json
 
-# Force re-download of IBKR data.
+# Force re-download of IBKR data (all accounts).
 ibctl download
+
+# Probe the API to see what data is available per account.
+ibctl probe
 ```
 
-Data is downloaded automatically when commands need it. Use `ibctl download` to force a refresh. Each download merges new data with the existing cache — trades are deduplicated by trade ID, so it is safe to run repeatedly.
+Data is downloaded automatically when commands need it. Use `ibctl download` to force a refresh. Each download merges new data with the existing cache — trades are deduplicated by trade ID, so it is safe to run repeatedly. Data is stored per account under `<data_dir>/v1/<account_alias>/`.
 
 ## Commands
 
@@ -130,7 +144,8 @@ Data is downloaded automatically when commands need it. Use `ibctl download` to 
 | `ibctl config edit` | Edit the configuration file in `$EDITOR` |
 | `ibctl config validate` | Validate the configuration file |
 | `ibctl download` | Force re-download and cache IBKR data via Flex Query API |
-| `ibctl holdings overview` | Display holdings with prices, positions, and classifications |
+| `ibctl holdings overview` | Display combined holdings with prices, positions, and classifications |
+| `ibctl probe` | Probe the API and show per-account data counts |
 
 ## Seeding Historical Data
 
@@ -143,11 +158,11 @@ IBKR limits all data access (API and portal) to 365 days per request. To get you
    mkdir -p ~/Documents/ibkr-statements
    ```
 
-2. Create a subdirectory for each IBKR account:
+2. Create a subdirectory for each IBKR account using your aliases:
    ```bash
-   mkdir ~/Documents/ibkr-statements/RRSP
-   mkdir ~/Documents/ibkr-statements/HoldCo
-   mkdir ~/Documents/ibkr-statements/Individual
+   mkdir ~/Documents/ibkr-statements/rrsp
+   mkdir ~/Documents/ibkr-statements/holdco
+   mkdir ~/Documents/ibkr-statements/individual
    ```
 
 3. For each account, log in to [IBKR Account Management](https://www.interactivebrokers.com/portal).
@@ -178,20 +193,35 @@ IBKR limits all data access (API and portal) to 365 days per request. To get you
 The Activity Statement CSVs are **seed data** that you manage. ibctl never modifies them. At command time, ibctl:
 
 1. Reads all CSVs from the configured directory (trades, positions, dividends, interest, instrument info)
-2. Reads any cached Flex Query data (from `ibctl download`)
-3. Merges and deduplicates — Flex Query data takes precedence for overlapping trades
-4. Computes tax lots, positions, and holdings from the merged data
+2. Reads any cached Flex Query data per account (from `ibctl download`)
+3. Merges and deduplicates — CSV data takes precedence for overlapping trades
+4. Converts transfers (ACATS) to synthetic trades for FIFO processing
+5. Computes tax lots, positions, and holdings from the merged data
 
 To keep data current, the Flex Query API provides the latest 365 days. To add older history, download more CSVs.
 
+## Multi-Account Support
+
+ibctl supports multiple IBKR accounts via the `accounts` section in the config. Each account is identified by an alias (e.g., "rrsp", "holdco") that maps to an IBKR account ID.
+
+- **Downloaded data** is stored per account under `<data_dir>/v1/<alias>/`
+- **Holdings overview** shows a combined view aggregated across all accounts
+- **Transfers** between accounts and from other brokers (ACATS) are tracked and converted to synthetic trades for accurate FIFO computation
+- **Corporate actions** (stock splits, mergers, spinoffs) are captured from the Flex Query API
+
+Account numbers are confidential — only aliases appear in output and directory names.
+
 ## Data Storage
 
-Raw API data is cached as protobuf-JSON files under the data directory (`<data_dir>/v1/` as configured in `ibctl.yaml`). Each file stores newline-separated proto JSON (one message per line), serialized using `protojson` with proto field names. Tax lots and derived computations are performed at read time from the merged data (Activity Statement CSVs + cached API data).
+Raw API data is cached as protobuf-JSON files under per-account directories (`<data_dir>/v1/<alias>/`). Each file stores newline-separated proto JSON (one message per line), serialized using `protojson` with proto field names. Tax lots and derived computations are performed at read time from the merged data (Activity Statement CSVs + cached API data).
 
 | File | Protobuf Message | Description |
 |------|-----------------|-------------|
-| `trades.json` | `ibctl.data.v1.Trade` | All trades from the IBKR Flex Query. Each trade includes trade ID, dates, symbol, side (buy/sell), quantity, price, proceeds, commission, currency code, and FIFO realized P&L. |
-| `positions.json` | `ibctl.data.v1.Position` | Open positions as reported by IBKR, including quantity, cost basis price, market price, market value, currency code, and unrealized P&L. |
-| `exchange_rates.json` | `ibctl.data.v1.ExchangeRate` | Currency exchange rates with date, base/quote currency codes, rate (units + micros), and provider (ibkr or [frankfurter.dev](https://frankfurter.dev)). |
+| `<alias>/trades.json` | `ibctl.data.v1.Trade` | All trades for this account. Includes trade ID, account, dates, symbol, side (buy/sell), quantity, price, proceeds, commission, currency code, and FIFO realized P&L. |
+| `<alias>/positions.json` | `ibctl.data.v1.Position` | Open positions for this account, including quantity, cost basis price, market price, market value, currency code, and unrealized P&L. |
+| `<alias>/transfers.json` | `ibctl.data.v1.Transfer` | Position transfers (ACATS, ATON, FOP, internal) for this account. Transfer-in records are converted to synthetic buy trades for FIFO processing. |
+| `<alias>/trade_transfers.json` | `ibctl.data.v1.TradeTransfer` | Transferred trade cost basis records. Preserves original trade date and cost basis for positions transferred from other brokers. |
+| `<alias>/corporate_actions.json` | `ibctl.data.v1.CorporateAction` | Corporate action events (stock splits, mergers, spinoffs) for this account. |
+| `exchange_rates.json` | `ibctl.data.v1.ExchangeRate` | Currency exchange rates (shared across accounts) with date, base/quote currency codes, rate, and provider (ibkr or [frankfurter.dev](https://frankfurter.dev)). |
 
 Monetary values use `standard.money.v1.Money` with units and micros (6 decimal places). Dates use `standard.time.v1.Date` with year, month, and day fields.

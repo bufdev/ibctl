@@ -81,14 +81,19 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	if err != nil {
 		return err
 	}
-	// Merge CSV seed data with Flex Query cached data.
-	dataDirV1Path := config.DataDirV1Path
-	mergedData, err := ibctlmerge.Merge(csvStatements, dataDirV1Path)
+	// Merge CSV seed data with Flex Query cached data across all accounts.
+	mergedData, err := ibctlmerge.Merge(csvStatements, config.DataDirV1Path, config.AccountAliases)
 	if err != nil {
 		return err
 	}
-	// Compute the holdings overview from merged data.
-	result, err := ibctlholdings.GetHoldingsOverview(mergedData.Trades, mergedData.Positions, config)
+	// Compute the combined holdings overview from merged data.
+	result, err := ibctlholdings.GetHoldingsOverview(
+		mergedData.Trades,
+		mergedData.Positions,
+		mergedData.Transfers,
+		mergedData.TradeTransfers,
+		config,
+	)
 	if err != nil {
 		return err
 	}
@@ -96,6 +101,7 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	logger := container.Logger()
 	for _, unmatched := range result.UnmatchedSells {
 		logger.Warn("unmatched sell (buy likely before data window)",
+			"account", unmatched.AccountAlias,
 			"symbol", unmatched.Symbol,
 			"unmatched_quantity", mathpb.ToString(unmatched.UnmatchedQuantity),
 		)
@@ -134,23 +140,27 @@ func logPositionDiscrepancy(container appext.Container, d ibctltaxlot.PositionDi
 	switch d.Type {
 	case ibctltaxlot.DiscrepancyTypeQuantity:
 		logger.Warn("position quantity mismatch",
+			"account", d.AccountAlias,
 			"symbol", d.Symbol,
 			"computed", d.ComputedValue,
 			"reported", d.ReportedValue,
 		)
 	case ibctltaxlot.DiscrepancyTypeCostBasis:
 		logger.Warn("position cost basis mismatch",
+			"account", d.AccountAlias,
 			"symbol", d.Symbol,
 			"computed", d.ComputedValue,
 			"reported", d.ReportedValue,
 		)
 	case ibctltaxlot.DiscrepancyTypeComputedOnly:
 		logger.Warn("position computed but not reported by IBKR",
+			"account", d.AccountAlias,
 			"symbol", d.Symbol,
 			"computed_quantity", d.ComputedValue,
 		)
 	case ibctltaxlot.DiscrepancyTypeReportedOnly:
 		logger.Warn("position reported by IBKR but not in computed data",
+			"account", d.AccountAlias,
 			"symbol", d.Symbol,
 			"reported_quantity", d.ReportedValue,
 		)

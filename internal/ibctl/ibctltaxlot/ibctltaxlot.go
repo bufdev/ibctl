@@ -34,6 +34,8 @@ type TaxLotResult struct {
 // UnmatchedSell records a sell trade where the corresponding buy lots
 // were not found in the trade data.
 type UnmatchedSell struct {
+	// AccountAlias is the account alias where the unmatched sell occurred.
+	AccountAlias string
 	// Symbol is the ticker symbol of the unmatched sell.
 	Symbol string
 	// UnmatchedQuantity is the remaining quantity that could not be matched.
@@ -43,6 +45,8 @@ type UnmatchedSell struct {
 // PositionDiscrepancy records a mismatch between a computed position and
 // the position reported by IBKR.
 type PositionDiscrepancy struct {
+	// AccountAlias is the account alias where the discrepancy was found.
+	AccountAlias string
 	// Symbol is the ticker symbol.
 	Symbol string
 	// Type describes the kind of discrepancy.
@@ -69,9 +73,16 @@ const (
 	DiscrepancyTypeReportedOnly
 )
 
+// lotKey uniquely identifies a group of FIFO lots by account and symbol.
+type lotKey struct {
+	accountAlias string
+	symbol       string
+}
+
 // taxLot is an internal representation of a tax lot used during FIFO computation.
 // Quantity is stored as total micros (units * 1_000_000 + micros) to support fractional shares.
 type taxLot struct {
+	accountAlias    string
 	symbol          string
 	openDate        xtime.Date
 	quantityMicros  int64
@@ -81,28 +92,34 @@ type taxLot struct {
 
 // ComputeTaxLots computes open tax lots from trades using FIFO ordering.
 // Buys create new lots, sells consume the oldest lots first.
+// Trades are grouped by (account_id, symbol) so each account's FIFO is independent.
+//
+// Transfer-in records are converted to synthetic buy trades before processing.
+// Corporate actions (stock splits, etc.) should be pre-processed by the caller
+// or handled as synthetic trades.
 //
 // If a sell cannot be fully matched against existing lots (e.g., the buy
 // occurred before the data window), the unmatched quantity is recorded in
 // the result rather than failing.
 func ComputeTaxLots(trades []*datav1.Trade) (*TaxLotResult, error) {
-	// Group trades by symbol, sorted by trade date.
-	symbolTrades := make(map[string][]*datav1.Trade)
+	// Group trades by (account_id, symbol), sorted by trade date.
+	keyTrades := make(map[lotKey][]*datav1.Trade)
 	for _, trade := range trades {
-		symbolTrades[trade.GetSymbol()] = append(symbolTrades[trade.GetSymbol()], trade)
+		key := lotKey{accountAlias: trade.GetAccountId(), symbol: trade.GetSymbol()}
+		keyTrades[key] = append(keyTrades[key], trade)
 	}
-	// Sort trades within each symbol by trade date.
-	for _, trades := range symbolTrades {
+	// Sort trades within each group by trade date.
+	for _, trades := range keyTrades {
 		sort.Slice(trades, func(i, j int) bool {
 			dateI := tradeDateString(trades[i])
 			dateJ := tradeDateString(trades[j])
 			return dateI < dateJ
 		})
 	}
-	// Process trades using FIFO within each symbol.
-	symbolLots := make(map[string][]*taxLot)
+	// Process trades using FIFO within each (account, symbol) group.
+	groupLots := make(map[lotKey][]*taxLot)
 	var unmatchedSells []UnmatchedSell
-	for symbol, trades := range symbolTrades {
+	for key, trades := range keyTrades {
 		for _, trade := range trades {
 			switch trade.GetSide() {
 			case datav1.TradeSide_TRADE_SIDE_UNSPECIFIED:
@@ -111,12 +128,13 @@ func ComputeTaxLots(trades []*datav1.Trade) (*TaxLotResult, error) {
 				// Parse the trade date for the lot open date.
 				openDate, err := protoDateToXtimeDate(trade.GetTradeDate())
 				if err != nil {
-					return nil, fmt.Errorf("parsing trade date for %s: %w", symbol, err)
+					return nil, fmt.Errorf("parsing trade date for %s/%s: %w", key.accountAlias, key.symbol, err)
 				}
 				// Create a new tax lot from the buy trade.
 				tradeQuantityMicros := mathpb.ToMicros(trade.GetQuantity())
-				symbolLots[symbol] = append(symbolLots[symbol], &taxLot{
-					symbol:          symbol,
+				groupLots[key] = append(groupLots[key], &taxLot{
+					accountAlias:    key.accountAlias,
+					symbol:          key.symbol,
 					openDate:        openDate,
 					quantityMicros:  tradeQuantityMicros,
 					costBasisMicros: moneypb.MoneyToMicros(trade.GetTradePrice()),
@@ -126,7 +144,7 @@ func ComputeTaxLots(trades []*datav1.Trade) (*TaxLotResult, error) {
 				// Sells consume the oldest lots first (FIFO).
 				// Sell quantity is negative, so negate to get the positive amount to consume.
 				remainingMicros := -mathpb.ToMicros(trade.GetQuantity())
-				lots := symbolLots[symbol]
+				lots := groupLots[key]
 				for len(lots) > 0 && remainingMicros > 0 {
 					lot := lots[0]
 					if lot.quantityMicros <= remainingMicros {
@@ -139,11 +157,12 @@ func ComputeTaxLots(trades []*datav1.Trade) (*TaxLotResult, error) {
 						remainingMicros = 0
 					}
 				}
-				symbolLots[symbol] = lots
+				groupLots[key] = lots
 				// Record any unmatched sell quantity (buy likely before data window).
 				if remainingMicros > 0 {
 					unmatchedSells = append(unmatchedSells, UnmatchedSell{
-						Symbol:            symbol,
+						AccountAlias:      key.accountAlias,
+						Symbol:            key.symbol,
 						UnmatchedQuantity: mathpb.FromMicros(remainingMicros),
 					})
 				}
@@ -152,7 +171,7 @@ func ComputeTaxLots(trades []*datav1.Trade) (*TaxLotResult, error) {
 	}
 	// Convert internal lots to proto tax lots.
 	var result []*datav1.TaxLot
-	for _, lots := range symbolLots {
+	for _, lots := range groupLots {
 		for _, lot := range lots {
 			protoOpenDate, err := timepb.DateToProto(lot.openDate)
 			if err != nil {
@@ -160,6 +179,7 @@ func ComputeTaxLots(trades []*datav1.Trade) (*TaxLotResult, error) {
 			}
 			result = append(result, &datav1.TaxLot{
 				Symbol:         lot.symbol,
+				AccountId:      lot.accountAlias,
 				OpenDate:       protoOpenDate,
 				Quantity:       mathpb.FromMicros(lot.quantityMicros),
 				CostBasisPrice: moneypb.MoneyFromMicros(lot.currencyCode, lot.costBasisMicros),
@@ -167,8 +187,11 @@ func ComputeTaxLots(trades []*datav1.Trade) (*TaxLotResult, error) {
 			})
 		}
 	}
-	// Sort by symbol then open date for deterministic output.
+	// Sort by account, then symbol, then open date for deterministic output.
 	sort.Slice(result, func(i, j int) bool {
+		if result[i].GetAccountId() != result[j].GetAccountId() {
+			return result[i].GetAccountId() < result[j].GetAccountId()
+		}
 		if result[i].GetSymbol() != result[j].GetSymbol() {
 			return result[i].GetSymbol() < result[j].GetSymbol()
 		}
@@ -181,19 +204,21 @@ func ComputeTaxLots(trades []*datav1.Trade) (*TaxLotResult, error) {
 }
 
 // ComputePositions aggregates tax lots into positions with weighted average cost basis.
+// Positions are grouped by (account_id, symbol).
 func ComputePositions(taxLots []*datav1.TaxLot) []*datav1.ComputedPosition {
-	// Aggregate quantities (as total micros) and total cost per symbol.
+	// Aggregate quantities (as total micros) and total cost per (account, symbol).
 	type symbolData struct {
 		quantityMicros  int64
 		totalCostMicros int64
 		currencyCode    string
 	}
-	symbolDataMap := make(map[string]*symbolData)
+	dataMap := make(map[lotKey]*symbolData)
 	for _, lot := range taxLots {
-		data, ok := symbolDataMap[lot.GetSymbol()]
+		key := lotKey{accountAlias: lot.GetAccountId(), symbol: lot.GetSymbol()}
+		data, ok := dataMap[key]
 		if !ok {
 			data = &symbolData{currencyCode: lot.GetCurrencyCode()}
-			symbolDataMap[lot.GetSymbol()] = data
+			dataMap[key] = data
 		}
 		lotQtyMicros := mathpb.ToMicros(lot.GetQuantity())
 		data.quantityMicros += lotQtyMicros
@@ -202,21 +227,25 @@ func ComputePositions(taxLots []*datav1.TaxLot) []*datav1.ComputedPosition {
 	}
 	// Build computed positions.
 	var positions []*datav1.ComputedPosition
-	for symbol, data := range symbolDataMap {
+	for key, data := range dataMap {
 		if data.quantityMicros == 0 {
 			continue
 		}
 		// Weighted average cost basis = total cost / total quantity.
 		avgCostMicros := data.totalCostMicros * microsFactor / data.quantityMicros
 		positions = append(positions, &datav1.ComputedPosition{
-			Symbol:                symbol,
+			Symbol:                key.symbol,
+			AccountId:             key.accountAlias,
 			Quantity:              mathpb.FromMicros(data.quantityMicros),
 			AverageCostBasisPrice: moneypb.MoneyFromMicros(data.currencyCode, avgCostMicros),
 			CurrencyCode:          data.currencyCode,
 		})
 	}
-	// Sort by symbol for deterministic output.
+	// Sort by account then symbol for deterministic output.
 	sort.Slice(positions, func(i, j int) bool {
+		if positions[i].GetAccountId() != positions[j].GetAccountId() {
+			return positions[i].GetAccountId() < positions[j].GetAccountId()
+		}
 		return positions[i].GetSymbol() < positions[j].GetSymbol()
 	})
 	return positions
@@ -232,25 +261,28 @@ func IsLongTerm(lot *datav1.TaxLot, asOf xtime.Date) (bool, error) {
 }
 
 // VerifyPositions compares computed positions against IBKR-reported positions.
-// Returns a list of structured discrepancies, empty if all match.
+// Comparison is done per (account_id, symbol). Returns a list of structured discrepancies.
 func VerifyPositions(computed []*datav1.ComputedPosition, reported []*datav1.Position) []PositionDiscrepancy {
-	// Build a map of computed positions by symbol.
-	computedMap := make(map[string]*datav1.ComputedPosition, len(computed))
+	// Build a map of computed positions by (account_id, symbol).
+	computedMap := make(map[lotKey]*datav1.ComputedPosition, len(computed))
 	for _, pos := range computed {
-		computedMap[pos.GetSymbol()] = pos
+		key := lotKey{accountAlias: pos.GetAccountId(), symbol: pos.GetSymbol()}
+		computedMap[key] = pos
 	}
-	// Build a map of reported positions by symbol.
-	reportedMap := make(map[string]*datav1.Position, len(reported))
+	// Build a map of reported positions by (account_id, symbol).
+	reportedMap := make(map[lotKey]*datav1.Position, len(reported))
 	for _, pos := range reported {
-		reportedMap[pos.GetSymbol()] = pos
+		key := lotKey{accountAlias: pos.GetAccountId(), symbol: pos.GetSymbol()}
+		reportedMap[key] = pos
 	}
 	var discrepancies []PositionDiscrepancy
 	// Check computed positions against reported.
-	for symbol, comp := range computedMap {
-		rep, ok := reportedMap[symbol]
+	for key, comp := range computedMap {
+		rep, ok := reportedMap[key]
 		if !ok {
 			discrepancies = append(discrepancies, PositionDiscrepancy{
-				Symbol:        symbol,
+				AccountAlias:  key.accountAlias,
+				Symbol:        key.symbol,
 				Type:          DiscrepancyTypeComputedOnly,
 				ComputedValue: mathpb.ToString(comp.GetQuantity()),
 			})
@@ -260,7 +292,8 @@ func VerifyPositions(computed []*datav1.ComputedPosition, reported []*datav1.Pos
 		repQty := mathpb.ToMicros(rep.GetQuantity())
 		if compQty != repQty {
 			discrepancies = append(discrepancies, PositionDiscrepancy{
-				Symbol:        symbol,
+				AccountAlias:  key.accountAlias,
+				Symbol:        key.symbol,
 				Type:          DiscrepancyTypeQuantity,
 				ComputedValue: mathpb.ToString(comp.GetQuantity()),
 				ReportedValue: mathpb.ToString(rep.GetQuantity()),
@@ -270,7 +303,8 @@ func VerifyPositions(computed []*datav1.ComputedPosition, reported []*datav1.Pos
 		reportedAvgPrice := moneypb.MoneyValueToString(rep.GetCostBasisPrice())
 		if computedAvgPrice != reportedAvgPrice {
 			discrepancies = append(discrepancies, PositionDiscrepancy{
-				Symbol:        symbol,
+				AccountAlias:  key.accountAlias,
+				Symbol:        key.symbol,
 				Type:          DiscrepancyTypeCostBasis,
 				ComputedValue: computedAvgPrice,
 				ReportedValue: reportedAvgPrice,
@@ -278,10 +312,11 @@ func VerifyPositions(computed []*datav1.ComputedPosition, reported []*datav1.Pos
 		}
 	}
 	// Check for positions reported by IBKR but not in computed.
-	for symbol, rep := range reportedMap {
-		if _, ok := computedMap[symbol]; !ok {
+	for key, rep := range reportedMap {
+		if _, ok := computedMap[key]; !ok {
 			discrepancies = append(discrepancies, PositionDiscrepancy{
-				Symbol:        symbol,
+				AccountAlias:  key.accountAlias,
+				Symbol:        key.symbol,
 				Type:          DiscrepancyTypeReportedOnly,
 				ReportedValue: mathpb.ToString(rep.GetQuantity()),
 			})
@@ -290,20 +325,118 @@ func VerifyPositions(computed []*datav1.ComputedPosition, reported []*datav1.Pos
 	return discrepancies
 }
 
+// TransfersToSyntheticTrades converts transfer records into synthetic trades
+// for FIFO processing. Transfer-in becomes a BUY, transfer-out becomes a SELL.
+func TransfersToSyntheticTrades(transfers []*datav1.Transfer) []*datav1.Trade {
+	var trades []*datav1.Trade
+	for _, transfer := range transfers {
+		// Determine trade side from transfer direction.
+		var side datav1.TradeSide
+		switch transfer.GetDirection() {
+		case datav1.TransferDirection_TRANSFER_DIRECTION_IN:
+			side = datav1.TradeSide_TRADE_SIDE_BUY
+		case datav1.TransferDirection_TRANSFER_DIRECTION_OUT:
+			side = datav1.TradeSide_TRADE_SIDE_SELL
+		case datav1.TransferDirection_TRANSFER_DIRECTION_UNSPECIFIED:
+			// Skip transfers with unknown direction.
+			continue
+		}
+		// Generate a deterministic trade ID for the synthetic trade.
+		tradeID := fmt.Sprintf("transfer-%s-%s-%s-%s",
+			transfer.GetAccountId(),
+			transfer.GetSymbol(),
+			protoDateStr(transfer.GetDate()),
+			mathpb.ToString(transfer.GetQuantity()),
+		)
+		// Use the transfer price as the trade price, default to zero if not available.
+		tradePrice := transfer.GetTransferPrice()
+		if tradePrice == nil {
+			tradePrice = moneypb.MoneyFromMicros(transfer.GetCurrencyCode(), 0)
+		}
+		trades = append(trades, &datav1.Trade{
+			TradeId:       tradeID,
+			AccountId:     transfer.GetAccountId(),
+			TradeDate:     transfer.GetDate(),
+			SettleDate:    transfer.GetDate(),
+			Symbol:        transfer.GetSymbol(),
+			AssetCategory: transfer.GetAssetCategory(),
+			Side:          side,
+			Quantity:      transfer.GetQuantity(),
+			TradePrice:    tradePrice,
+			Proceeds:      moneypb.MoneyFromMicros(transfer.GetCurrencyCode(), 0),
+			Commission:    moneypb.MoneyFromMicros(transfer.GetCurrencyCode(), 0),
+			CurrencyCode:  transfer.GetCurrencyCode(),
+		})
+	}
+	return trades
+}
+
+// TradeTransfersToSyntheticTrades converts trade transfer records into
+// synthetic buy trades that preserve the original cost basis and holding period.
+func TradeTransfersToSyntheticTrades(tradeTransfers []*datav1.TradeTransfer) []*datav1.Trade {
+	var trades []*datav1.Trade
+	for _, tt := range tradeTransfers {
+		// Generate a deterministic trade ID for the synthetic trade.
+		tradeID := fmt.Sprintf("trade-transfer-%s-%s-%s-%s",
+			tt.GetAccountId(),
+			tt.GetSymbol(),
+			protoDateStr(tt.GetDate()),
+			mathpb.ToString(tt.GetQuantity()),
+		)
+		// Use orig_trade_date for the lot open date (preserves holding period).
+		// Fall back to the transfer date if orig_trade_date is not available.
+		tradeDate := tt.GetOrigTradeDate()
+		if tradeDate == nil {
+			tradeDate = tt.GetDate()
+		}
+		// Use orig_trade_price as the cost basis, fall back to cost field.
+		tradePrice := tt.GetOrigTradePrice()
+		if tradePrice == nil {
+			tradePrice = tt.GetCost()
+		}
+		if tradePrice == nil {
+			tradePrice = moneypb.MoneyFromMicros(tt.GetCurrencyCode(), 0)
+		}
+		trades = append(trades, &datav1.Trade{
+			TradeId:       tradeID,
+			AccountId:     tt.GetAccountId(),
+			TradeDate:     tradeDate,
+			SettleDate:    tt.GetDate(),
+			Symbol:        tt.GetSymbol(),
+			AssetCategory: tt.GetAssetCategory(),
+			Side:          datav1.TradeSide_TRADE_SIDE_BUY,
+			Quantity:      tt.GetQuantity(),
+			TradePrice:    tradePrice,
+			Proceeds:      moneypb.MoneyFromMicros(tt.GetCurrencyCode(), 0),
+			Commission:    moneypb.MoneyFromMicros(tt.GetCurrencyCode(), 0),
+			CurrencyCode:  tt.GetCurrencyCode(),
+		})
+	}
+	return trades
+}
+
+// *** PRIVATE ***
+
 // tradeDateString returns a sortable date string from a trade's trade_date.
 func tradeDateString(trade *datav1.Trade) string {
-	if d := trade.GetTradeDate(); d != nil {
-		return fmt.Sprintf("%04d-%02d-%02d", d.GetYear(), d.GetMonth(), d.GetDay())
-	}
-	return ""
+	return protoDateStr(trade.GetTradeDate())
 }
 
 // taxLotDateString returns a sortable date string from a tax lot's open_date.
 func taxLotDateString(lot *datav1.TaxLot) string {
-	if d := lot.GetOpenDate(); d != nil {
-		return fmt.Sprintf("%04d-%02d-%02d", d.GetYear(), d.GetMonth(), d.GetDay())
+	return protoDateStr(lot.GetOpenDate())
+}
+
+// protoDateStr returns a sortable date string from a proto Date.
+func protoDateStr(d interface {
+	GetYear() uint32
+	GetMonth() uint32
+	GetDay() uint32
+}) string {
+	if d == nil {
+		return ""
 	}
-	return ""
+	return fmt.Sprintf("%04d-%02d-%02d", d.GetYear(), d.GetMonth(), d.GetDay())
 }
 
 // protoDateToXtimeDate converts a proto Date to an xtime.Date.

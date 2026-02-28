@@ -66,32 +66,71 @@ func HoldingOverviewToRow(h *HoldingOverview) []string {
 // GetHoldingsOverview computes the holdings overview from merged trade and position data.
 // Trades are used to compute FIFO tax lots and average cost basis.
 // Positions provide the latest market prices and are used for verification.
-func GetHoldingsOverview(trades []*datav1.Trade, positions []*datav1.Position, config *ibctlconfig.Config) (*HoldingsResult, error) {
-	// Compute tax lots from merged trades.
-	taxLotResult, err := ibctltaxlot.ComputeTaxLots(trades)
+// Transfers are converted to synthetic trades for FIFO processing.
+// The result is a combined view aggregated across all accounts.
+func GetHoldingsOverview(
+	trades []*datav1.Trade,
+	positions []*datav1.Position,
+	transfers []*datav1.Transfer,
+	tradeTransfers []*datav1.TradeTransfer,
+	config *ibctlconfig.Config,
+) (*HoldingsResult, error) {
+	// Convert transfers and trade transfers to synthetic trades for FIFO processing.
+	allTrades := make([]*datav1.Trade, 0, len(trades))
+	allTrades = append(allTrades, trades...)
+	allTrades = append(allTrades, ibctltaxlot.TransfersToSyntheticTrades(transfers)...)
+	allTrades = append(allTrades, ibctltaxlot.TradeTransfersToSyntheticTrades(tradeTransfers)...)
+	// Compute tax lots from all trades (real + synthetic from transfers).
+	taxLotResult, err := ibctltaxlot.ComputeTaxLots(allTrades)
 	if err != nil {
 		return nil, err
 	}
-	// Compute positions from tax lots (for average cost basis).
+	// Compute per-account positions from tax lots.
 	computedPositions := ibctltaxlot.ComputePositions(taxLotResult.TaxLots)
 	// Verify computed positions against IBKR-reported positions.
 	discrepancies := ibctltaxlot.VerifyPositions(computedPositions, positions)
 
-	// Build a map of market prices from IBKR-reported positions.
+	// Build a map of market prices from IBKR-reported positions, keyed by symbol.
+	// For combined view, we use the latest price from any account that reports it.
 	marketPrices := make(map[string]string, len(positions))
 	for _, pos := range positions {
 		marketPrices[pos.GetSymbol()] = moneypb.MoneyValueToString(pos.GetMarketPrice())
 	}
 
-	// Build holdings overview from computed positions with metadata from config.
-	var holdings []*HoldingOverview
+	// Aggregate computed positions across accounts for combined view.
+	// Group by symbol, sum quantities, weighted-average cost basis.
+	type combinedData struct {
+		quantityMicros  int64
+		totalCostMicros int64
+		currencyCode    string
+	}
+	combinedMap := make(map[string]*combinedData)
 	for _, pos := range computedPositions {
 		symbol := pos.GetSymbol()
+		data, ok := combinedMap[symbol]
+		if !ok {
+			data = &combinedData{currencyCode: pos.GetCurrencyCode()}
+			combinedMap[symbol] = data
+		}
+		qtyMicros := mathpb.ToMicros(pos.GetQuantity())
+		data.quantityMicros += qtyMicros
+		// Accumulate total cost for weighted average.
+		data.totalCostMicros += moneypb.MoneyToMicros(pos.GetAverageCostBasisPrice()) * qtyMicros / 1_000_000
+	}
+
+	// Build holdings overview from aggregated positions.
+	var holdings []*HoldingOverview
+	for symbol, data := range combinedMap {
+		if data.quantityMicros == 0 {
+			continue
+		}
+		// Weighted average cost basis = total cost / total quantity.
+		avgCostMicros := data.totalCostMicros * 1_000_000 / data.quantityMicros
 		holding := &HoldingOverview{
 			Symbol:       symbol,
 			LastPrice:    marketPrices[symbol],
-			AveragePrice: moneypb.MoneyValueToString(pos.GetAverageCostBasisPrice()),
-			Position:     pos.GetQuantity(),
+			AveragePrice: moneypb.MoneyValueToString(moneypb.MoneyFromMicros(data.currencyCode, avgCostMicros)),
+			Position:     mathpb.FromMicros(data.quantityMicros),
 		}
 		// Merge symbol classification from config.
 		if symbolConfig, ok := config.SymbolConfigs[symbol]; ok {
