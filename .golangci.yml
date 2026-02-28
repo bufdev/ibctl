@@ -1,0 +1,81 @@
+version: "2"
+linters:
+  default: all
+  disable:
+    - cyclop            # covered by gocyclo
+    - depguard          # unnecessary for small libraries
+    - err113            # way too noisy
+    - exhaustruct       # many exceptions
+    - funlen            # rely on code review to limit function length
+    - gocognit          # dubious "cognitive overhead" quantification
+    - gocyclo           # too noisy for complex but correct functions
+    - godox             # allow TODO/BUG/FIXME comments
+    - gochecknoglobals  # too noisy
+    - gocritic          # too noisy
+    - godoclint         # we run this separately if at all
+    - gosec             # too noisy
+    - gosmopolitan      # too noisy
+    - inamedparam       # not standard style
+    - interfacebloat    # many exceptions
+    - ireturn           # "accept interfaces, return structs" isn't ironclad
+    - lll               # don't want hard limits for line length
+    - maintidx          # covered by gocyclo
+    - mnd               # too noisy
+    - noinlineerr       # this is the opposite of a good thing
+    - nestif            # too noisy for complex but correct logic
+    - nilnil            # allow this
+    - nlreturn          # too much whitespace
+    - prealloc          # too noisy
+    - recvcheck         # too noisy
+    - revive            # too noisy
+    - tagalign          # too noisy
+    - tagliatelle       # too noisy
+    - testifylint       # does not want us to use assert
+    - testpackage       # internal tests are fine
+    - thelper           # we want to print out the whole stack
+    - unparam           # too noisy
+    - varnamelen        # too noisy
+    - wrapcheck         # don't _always_ need to wrap errors
+    - wsl               # too much whitespace
+    - wsl_v5            # too much whitespace
+  settings:
+    errcheck:
+      check-type-assertions: true
+    forbidigo:
+      forbid:
+        # Ban debug statements
+        - pattern: ^fmt\.Print
+        - pattern: ^log\.
+        - pattern: ^print$
+        - pattern: ^println$
+        # proto.Clone is old
+        - pattern: ^proto\.Clone$
+          msg: please use proto.CloneOf
+    govet:
+      enable:
+        - nilness
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+    dupl:
+      threshold: 250
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      #- linters:
+          #- staticcheck
+        #text: 'QF1008'
+issues:
+  max-same-issues: 0
+formatters:
+  enable:
+    - gci
+    - gofmt
+  exclusions:
+    generated: lax

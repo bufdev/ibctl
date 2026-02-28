@@ -1,0 +1,16 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+    - UNARY_RPC
+  except:
+    - PROTOVALIDATE
+  disallow_comment_ignores: true
+breaking:
+  use:
+    - WIRE_JSON
+  ignore_unstable_packages: true
+deps:
+  - buf.build/bufbuild/protovalidate
