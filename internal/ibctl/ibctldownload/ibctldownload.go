@@ -21,7 +21,6 @@ import (
 
 	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
-	"github.com/bufdev/ibctl/internal/ibctl/ibctltaxlot"
 	"github.com/bufdev/ibctl/internal/pkg/frankfurter"
 	"github.com/bufdev/ibctl/internal/pkg/ibkrflexquery"
 	"github.com/bufdev/ibctl/internal/pkg/mathpb"
@@ -29,7 +28,6 @@ import (
 	"github.com/bufdev/ibctl/internal/pkg/protoio"
 	"github.com/bufdev/ibctl/internal/pkg/timepb"
 	"github.com/bufdev/ibctl/internal/standard/xtime"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Downloader is the interface for downloading and caching IBKR data.
@@ -105,11 +103,12 @@ func (d *downloader) Download(ctx context.Context) error {
 }
 
 // processAndWrite converts XML data to protos, merges with existing cached data,
-// computes tax lots, verifies positions, and writes all JSON data files.
+// and writes the raw data files (trades, positions, exchange rates).
 // This is idempotent — running it multiple times with overlapping data produces
 // the same result. Trades are deduplicated by trade ID, exchange rates by
 // date+currency pair. Positions are always overwritten (they are a point-in-time
-// snapshot). Tax lots and metadata are recomputed from the full merged trade set.
+// snapshot). Tax lots and derived computations happen at read time in commands
+// that have access to the full merged data (including Activity Statement CSVs).
 func (d *downloader) processAndWrite(
 	ctx context.Context,
 	xmlTrades []ibkrflexquery.XMLTrade,
@@ -152,41 +151,7 @@ func (d *downloader) processAndWrite(
 		return fmt.Errorf("writing exchange rates: %w", err)
 	}
 	d.logger.Info("exchange rates written", "count", len(exchangeRates), "path", exchangeRatesPath)
-
-	// Compute tax lots from the full merged trade set.
-	taxLots, err := ibctltaxlot.ComputeTaxLots(trades)
-	if err != nil {
-		return fmt.Errorf("computing tax lots: %w", err)
-	}
-	taxLotsPath := filepath.Join(d.dataDirV1Path, "tax_lots.json")
-	if err := protoio.WriteMessagesJSON(taxLotsPath, taxLots); err != nil {
-		return fmt.Errorf("writing tax lots: %w", err)
-	}
-	d.logger.Info("tax lots written", "count", len(taxLots), "path", taxLotsPath)
-
-	// Compute positions from tax lots and verify against IBKR-reported positions.
-	computedPositions := ibctltaxlot.ComputePositions(taxLots)
-	verificationNotes := ibctltaxlot.VerifyPositions(computedPositions, positions)
-	positionsVerified := len(verificationNotes) == 0
-	if !positionsVerified {
-		for _, note := range verificationNotes {
-			d.logger.Warn("position verification", "note", note)
-		}
-	} else {
-		d.logger.Info("all positions verified successfully")
-	}
-
-	// Write metadata.json.
-	metadata := &datav1.Metadata{
-		DownloadTime:      timestamppb.Now(),
-		PositionsVerified: positionsVerified,
-		VerificationNotes: verificationNotes,
-	}
-	metadataPath := filepath.Join(d.dataDirV1Path, "metadata.json")
-	if err := protoio.WriteMessageJSON(metadataPath, metadata); err != nil {
-		return fmt.Errorf("writing metadata: %w", err)
-	}
-	d.logger.Info("download complete", "positions_verified", positionsVerified)
+	d.logger.Info("download complete")
 	return nil
 }
 

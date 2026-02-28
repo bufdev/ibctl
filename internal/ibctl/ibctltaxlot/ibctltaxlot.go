@@ -12,6 +12,7 @@ import (
 	"time"
 
 	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
+	mathv1 "github.com/bufdev/ibctl/internal/gen/proto/go/standard/math/v1"
 	"github.com/bufdev/ibctl/internal/pkg/mathpb"
 	"github.com/bufdev/ibctl/internal/pkg/moneypb"
 	"github.com/bufdev/ibctl/internal/pkg/timepb"
@@ -20,6 +21,53 @@ import (
 
 // microsFactor is the number of micros per unit.
 const microsFactor = 1_000_000
+
+// TaxLotResult contains the output of FIFO tax lot computation.
+type TaxLotResult struct {
+	// TaxLots is the list of open tax lots after processing all trades.
+	TaxLots []*datav1.TaxLot
+	// UnmatchedSells records sells that could not be fully matched against
+	// existing buy lots (e.g., the buy occurred before the data window).
+	UnmatchedSells []UnmatchedSell
+}
+
+// UnmatchedSell records a sell trade where the corresponding buy lots
+// were not found in the trade data.
+type UnmatchedSell struct {
+	// Symbol is the ticker symbol of the unmatched sell.
+	Symbol string
+	// UnmatchedQuantity is the remaining quantity that could not be matched.
+	UnmatchedQuantity *mathv1.Decimal
+}
+
+// PositionDiscrepancy records a mismatch between a computed position and
+// the position reported by IBKR.
+type PositionDiscrepancy struct {
+	// Symbol is the ticker symbol.
+	Symbol string
+	// Type describes the kind of discrepancy.
+	Type DiscrepancyType
+	// ComputedValue is the computed value (quantity or price), empty if the
+	// position only exists on one side.
+	ComputedValue string
+	// ReportedValue is the IBKR-reported value, empty if the position only
+	// exists on one side.
+	ReportedValue string
+}
+
+// DiscrepancyType describes the kind of position discrepancy.
+type DiscrepancyType int
+
+const (
+	// DiscrepancyTypeQuantity indicates a quantity mismatch.
+	DiscrepancyTypeQuantity DiscrepancyType = iota + 1
+	// DiscrepancyTypeCostBasis indicates an average cost basis mismatch.
+	DiscrepancyTypeCostBasis
+	// DiscrepancyTypeComputedOnly indicates a position exists in computed data but not in IBKR.
+	DiscrepancyTypeComputedOnly
+	// DiscrepancyTypeReportedOnly indicates a position exists in IBKR but not in computed data.
+	DiscrepancyTypeReportedOnly
+)
 
 // taxLot is an internal representation of a tax lot used during FIFO computation.
 // Quantity is stored as total micros (units * 1_000_000 + micros) to support fractional shares.
@@ -33,7 +81,11 @@ type taxLot struct {
 
 // ComputeTaxLots computes open tax lots from trades using FIFO ordering.
 // Buys create new lots, sells consume the oldest lots first.
-func ComputeTaxLots(trades []*datav1.Trade) ([]*datav1.TaxLot, error) {
+//
+// If a sell cannot be fully matched against existing lots (e.g., the buy
+// occurred before the data window), the unmatched quantity is recorded in
+// the result rather than failing.
+func ComputeTaxLots(trades []*datav1.Trade) (*TaxLotResult, error) {
 	// Group trades by symbol, sorted by trade date.
 	symbolTrades := make(map[string][]*datav1.Trade)
 	for _, trade := range trades {
@@ -49,6 +101,7 @@ func ComputeTaxLots(trades []*datav1.Trade) ([]*datav1.TaxLot, error) {
 	}
 	// Process trades using FIFO within each symbol.
 	symbolLots := make(map[string][]*taxLot)
+	var unmatchedSells []UnmatchedSell
 	for symbol, trades := range symbolTrades {
 		for _, trade := range trades {
 			switch trade.GetSide() {
@@ -87,8 +140,12 @@ func ComputeTaxLots(trades []*datav1.Trade) ([]*datav1.TaxLot, error) {
 					}
 				}
 				symbolLots[symbol] = lots
+				// Record any unmatched sell quantity (buy likely before data window).
 				if remainingMicros > 0 {
-					return nil, fmt.Errorf("insufficient lots for sell of %s: %d.%06d shares remaining", symbol, remainingMicros/microsFactor, remainingMicros%microsFactor)
+					unmatchedSells = append(unmatchedSells, UnmatchedSell{
+						Symbol:            symbol,
+						UnmatchedQuantity: mathpb.FromMicros(remainingMicros),
+					})
 				}
 			}
 		}
@@ -117,7 +174,10 @@ func ComputeTaxLots(trades []*datav1.Trade) ([]*datav1.TaxLot, error) {
 		}
 		return taxLotDateString(result[i]) < taxLotDateString(result[j])
 	})
-	return result, nil
+	return &TaxLotResult{
+		TaxLots:        result,
+		UnmatchedSells: unmatchedSells,
+	}, nil
 }
 
 // ComputePositions aggregates tax lots into positions with weighted average cost basis.
@@ -172,8 +232,8 @@ func IsLongTerm(lot *datav1.TaxLot, asOf xtime.Date) (bool, error) {
 }
 
 // VerifyPositions compares computed positions against IBKR-reported positions.
-// Returns a list of discrepancy descriptions, empty if all match.
-func VerifyPositions(computed []*datav1.ComputedPosition, reported []*datav1.Position) []string {
+// Returns a list of structured discrepancies, empty if all match.
+func VerifyPositions(computed []*datav1.ComputedPosition, reported []*datav1.Position) []PositionDiscrepancy {
 	// Build a map of computed positions by symbol.
 	computedMap := make(map[string]*datav1.ComputedPosition, len(computed))
 	for _, pos := range computed {
@@ -184,32 +244,50 @@ func VerifyPositions(computed []*datav1.ComputedPosition, reported []*datav1.Pos
 	for _, pos := range reported {
 		reportedMap[pos.GetSymbol()] = pos
 	}
-	var notes []string
+	var discrepancies []PositionDiscrepancy
 	// Check computed positions against reported.
 	for symbol, comp := range computedMap {
 		rep, ok := reportedMap[symbol]
 		if !ok {
-			notes = append(notes, symbol+": computed position exists but not reported by IBKR")
+			discrepancies = append(discrepancies, PositionDiscrepancy{
+				Symbol:        symbol,
+				Type:          DiscrepancyTypeComputedOnly,
+				ComputedValue: mathpb.ToString(comp.GetQuantity()),
+			})
 			continue
 		}
 		compQty := mathpb.ToMicros(comp.GetQuantity())
 		repQty := mathpb.ToMicros(rep.GetQuantity())
 		if compQty != repQty {
-			notes = append(notes, fmt.Sprintf("%s: quantity mismatch: computed=%s, reported=%s", symbol, mathpb.ToString(comp.GetQuantity()), mathpb.ToString(rep.GetQuantity())))
+			discrepancies = append(discrepancies, PositionDiscrepancy{
+				Symbol:        symbol,
+				Type:          DiscrepancyTypeQuantity,
+				ComputedValue: mathpb.ToString(comp.GetQuantity()),
+				ReportedValue: mathpb.ToString(rep.GetQuantity()),
+			})
 		}
 		computedAvgPrice := moneypb.MoneyValueToString(comp.GetAverageCostBasisPrice())
 		reportedAvgPrice := moneypb.MoneyValueToString(rep.GetCostBasisPrice())
 		if computedAvgPrice != reportedAvgPrice {
-			notes = append(notes, fmt.Sprintf("%s: average cost basis mismatch: computed=%s, reported=%s", symbol, computedAvgPrice, reportedAvgPrice))
+			discrepancies = append(discrepancies, PositionDiscrepancy{
+				Symbol:        symbol,
+				Type:          DiscrepancyTypeCostBasis,
+				ComputedValue: computedAvgPrice,
+				ReportedValue: reportedAvgPrice,
+			})
 		}
 	}
 	// Check for positions reported by IBKR but not in computed.
-	for symbol := range reportedMap {
+	for symbol, rep := range reportedMap {
 		if _, ok := computedMap[symbol]; !ok {
-			notes = append(notes, symbol+": reported by IBKR but not in computed positions")
+			discrepancies = append(discrepancies, PositionDiscrepancy{
+				Symbol:        symbol,
+				Type:          DiscrepancyTypeReportedOnly,
+				ReportedValue: mathpb.ToString(rep.GetQuantity()),
+			})
 		}
 	}
-	return notes
+	return discrepancies
 }
 
 // tradeDateString returns a sortable date string from a trade's trade_date.

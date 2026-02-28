@@ -15,8 +15,10 @@ import (
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlholdings"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlmerge"
+	"github.com/bufdev/ibctl/internal/ibctl/ibctltaxlot"
 	"github.com/bufdev/ibctl/internal/pkg/cliio"
 	"github.com/bufdev/ibctl/internal/pkg/ibkractivitycsv"
+	"github.com/bufdev/ibctl/internal/pkg/mathpb"
 	"github.com/spf13/pflag"
 )
 
@@ -86,31 +88,71 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 		return err
 	}
 	// Compute the holdings overview from merged data.
-	holdingsOverview, err := ibctlholdings.GetHoldingsOverview(mergedData.Trades, mergedData.Positions, config)
+	result, err := ibctlholdings.GetHoldingsOverview(mergedData.Trades, mergedData.Positions, config)
 	if err != nil {
 		return err
+	}
+	// Log any data inconsistencies detected during computation.
+	logger := container.Logger()
+	for _, unmatched := range result.UnmatchedSells {
+		logger.Warn("unmatched sell (buy likely before data window)",
+			"symbol", unmatched.Symbol,
+			"unmatched_quantity", mathpb.ToString(unmatched.UnmatchedQuantity),
+		)
+	}
+	for _, discrepancy := range result.PositionDiscrepancies {
+		logPositionDiscrepancy(container, discrepancy)
 	}
 	// Write output in the requested format.
 	writer := os.Stdout
 	switch format {
 	case cliio.FormatTable:
 		headers := ibctlholdings.HoldingsOverviewHeaders()
-		rows := make([][]string, 0, len(holdingsOverview))
-		for _, h := range holdingsOverview {
+		rows := make([][]string, 0, len(result.Holdings))
+		for _, h := range result.Holdings {
 			rows = append(rows, ibctlholdings.HoldingOverviewToRow(h))
 		}
 		return cliio.WriteTable(writer, headers, rows)
 	case cliio.FormatCSV:
 		headers := ibctlholdings.HoldingsOverviewHeaders()
-		records := make([][]string, 0, len(holdingsOverview)+1)
+		records := make([][]string, 0, len(result.Holdings)+1)
 		records = append(records, headers)
-		for _, h := range holdingsOverview {
+		for _, h := range result.Holdings {
 			records = append(records, ibctlholdings.HoldingOverviewToRow(h))
 		}
 		return cliio.WriteCSVRecords(writer, records)
 	case cliio.FormatJSON:
-		return cliio.WriteJSON(writer, holdingsOverview...)
+		return cliio.WriteJSON(writer, result.Holdings...)
 	default:
 		return appcmd.NewInvalidArgumentErrorf("unsupported format: %s", format)
+	}
+}
+
+// logPositionDiscrepancy logs a structured position discrepancy as a warning.
+func logPositionDiscrepancy(container appext.Container, d ibctltaxlot.PositionDiscrepancy) {
+	logger := container.Logger()
+	switch d.Type {
+	case ibctltaxlot.DiscrepancyTypeQuantity:
+		logger.Warn("position quantity mismatch",
+			"symbol", d.Symbol,
+			"computed", d.ComputedValue,
+			"reported", d.ReportedValue,
+		)
+	case ibctltaxlot.DiscrepancyTypeCostBasis:
+		logger.Warn("position cost basis mismatch",
+			"symbol", d.Symbol,
+			"computed", d.ComputedValue,
+			"reported", d.ReportedValue,
+		)
+	case ibctltaxlot.DiscrepancyTypeComputedOnly:
+		logger.Warn("position computed but not reported by IBKR",
+			"symbol", d.Symbol,
+			"computed_quantity", d.ComputedValue,
+		)
+	case ibctltaxlot.DiscrepancyTypeReportedOnly:
+		logger.Warn("position reported by IBKR but not in computed data",
+			"symbol", d.Symbol,
+			"reported_quantity", d.ReportedValue,
+		)
 	}
 }

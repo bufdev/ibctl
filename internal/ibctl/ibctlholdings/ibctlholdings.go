@@ -16,6 +16,17 @@ import (
 	"github.com/bufdev/ibctl/internal/pkg/moneypb"
 )
 
+// HoldingsResult contains the holdings overview along with any data
+// inconsistencies detected during computation.
+type HoldingsResult struct {
+	// Holdings is the list of holdings for display.
+	Holdings []*HoldingOverview
+	// UnmatchedSells records sells that could not be matched to buy lots.
+	UnmatchedSells []ibctltaxlot.UnmatchedSell
+	// PositionDiscrepancies records mismatches between computed and IBKR-reported positions.
+	PositionDiscrepancies []ibctltaxlot.PositionDiscrepancy
+}
+
 // HoldingOverview represents a single holding for display.
 type HoldingOverview struct {
 	// Symbol is the ticker symbol.
@@ -54,15 +65,17 @@ func HoldingOverviewToRow(h *HoldingOverview) []string {
 
 // GetHoldingsOverview computes the holdings overview from merged trade and position data.
 // Trades are used to compute FIFO tax lots and average cost basis.
-// Positions provide the latest market prices.
-func GetHoldingsOverview(trades []*datav1.Trade, positions []*datav1.Position, config *ibctlconfig.Config) ([]*HoldingOverview, error) {
+// Positions provide the latest market prices and are used for verification.
+func GetHoldingsOverview(trades []*datav1.Trade, positions []*datav1.Position, config *ibctlconfig.Config) (*HoldingsResult, error) {
 	// Compute tax lots from merged trades.
-	taxLots, err := ibctltaxlot.ComputeTaxLots(trades)
+	taxLotResult, err := ibctltaxlot.ComputeTaxLots(trades)
 	if err != nil {
 		return nil, err
 	}
 	// Compute positions from tax lots (for average cost basis).
-	computedPositions := ibctltaxlot.ComputePositions(taxLots)
+	computedPositions := ibctltaxlot.ComputePositions(taxLotResult.TaxLots)
+	// Verify computed positions against IBKR-reported positions.
+	discrepancies := ibctltaxlot.VerifyPositions(computedPositions, positions)
 
 	// Build a map of market prices from IBKR-reported positions.
 	marketPrices := make(map[string]string, len(positions))
@@ -93,5 +106,9 @@ func GetHoldingsOverview(trades []*datav1.Trade, positions []*datav1.Position, c
 	sort.Slice(holdings, func(i, j int) bool {
 		return holdings[i].Symbol < holdings[j].Symbol
 	})
-	return holdings, nil
+	return &HoldingsResult{
+		Holdings:              holdings,
+		UnmatchedSells:        taxLotResult.UnmatchedSells,
+		PositionDiscrepancies: discrepancies,
+	}, nil
 }

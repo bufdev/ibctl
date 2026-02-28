@@ -186,14 +186,12 @@ To keep data current, the Flex Query API provides the latest 365 days. To add ol
 
 ## Data Storage
 
-All data is cached as protobuf-JSON files under the data directory (`<data_dir>/v1/` as configured in `ibctl.yaml`). Each file stores newline-separated proto JSON (one message per line), serialized using `protojson` with proto field names. `metadata.json` is a single message.
+Raw API data is cached as protobuf-JSON files under the data directory (`<data_dir>/v1/` as configured in `ibctl.yaml`). Each file stores newline-separated proto JSON (one message per line), serialized using `protojson` with proto field names. Tax lots and derived computations are performed at read time from the merged data (Activity Statement CSVs + cached API data).
 
 | File | Protobuf Message | Description |
 |------|-----------------|-------------|
 | `trades.json` | `ibctl.data.v1.Trade` | All trades from the IBKR Flex Query. Each trade includes trade ID, dates, symbol, side (buy/sell), quantity, price, proceeds, commission, currency code, and FIFO realized P&L. |
 | `positions.json` | `ibctl.data.v1.Position` | Open positions as reported by IBKR, including quantity, cost basis price, market price, market value, currency code, and unrealized P&L. |
-| `tax_lots.json` | `ibctl.data.v1.TaxLot` | FIFO tax lots computed from trades. Each lot tracks symbol, open date, remaining quantity, cost basis price, and currency code. Long-term status (held >= 1 year) is computed dynamically at display time. |
 | `exchange_rates.json` | `ibctl.data.v1.ExchangeRate` | Currency exchange rates with date, base/quote currency codes, rate (units + micros), and provider (ibkr or [frankfurter.dev](https://frankfurter.dev)). |
-| `metadata.json` | `ibctl.data.v1.Metadata` | Download timestamp, whether computed positions matched IBKR-reported positions, and any verification discrepancy notes. |
 
-Monetary values use `standard.money.v1.Money` with units and micros (6 decimal places). Dates use `standard.time.v1.Date` with year, month, and day fields. Timestamps use `google.protobuf.Timestamp`.
+Monetary values use `standard.money.v1.Money` with units and micros (6 decimal places). Dates use `standard.time.v1.Date` with year, month, and day fields.
