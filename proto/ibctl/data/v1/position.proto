@@ -38,8 +38,14 @@ message Position {
   string description = 2;
   // The asset category (e.g., "STK", "OPT").
   string asset_category = 3 [(buf.validate.field).required = true];
-  // The number of shares or contracts held. May be negative for short positions.
-  int64 quantity = 4;
+  // The whole units of the quantity held (may be negative for short positions).
+  int64 quantity_units = 4;
+  // The micro units of the quantity held.
+  // Must be between -999999 and 999999. Sign must match quantity_units.
+  int64 quantity_micros = 10 [
+    (buf.validate.field).int64.gte = -999999,
+    (buf.validate.field).int64.lte = 999999
+  ];
   // The cost basis price per share.
   standard.money.v1.Money cost_basis_price = 5 [(buf.validate.field).required = true];
   // The current market price per share.

@@ -36,8 +36,11 @@ type Position struct {
 	Description string `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
 	// The asset category (e.g., "STK", "OPT").
 	AssetCategory string `protobuf:"bytes,3,opt,name=asset_category,json=assetCategory,proto3" json:"asset_category,omitempty"`
-	// The number of shares or contracts held. May be negative for short positions.
-	Quantity int64 `protobuf:"varint,4,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	// The whole units of the quantity held (may be negative for short positions).
+	QuantityUnits int64 `protobuf:"varint,4,opt,name=quantity_units,json=quantityUnits,proto3" json:"quantity_units,omitempty"`
+	// The micro units of the quantity held.
+	// Must be between -999999 and 999999. Sign must match quantity_units.
+	QuantityMicros int64 `protobuf:"varint,10,opt,name=quantity_micros,json=quantityMicros,proto3" json:"quantity_micros,omitempty"`
 	// The cost basis price per share.
 	CostBasisPrice *v1.Money `protobuf:"bytes,5,opt,name=cost_basis_price,json=costBasisPrice,proto3" json:"cost_basis_price,omitempty"`
 	// The current market price per share.
@@ -104,9 +107,16 @@ func (x *Position) GetAssetCategory() string {
 	return ""
 }
 
-func (x *Position) GetQuantity() int64 {
+func (x *Position) GetQuantityUnits() int64 {
 	if x != nil {
-		return x.Quantity
+		return x.QuantityUnits
+	}
+	return 0
+}
+
+func (x *Position) GetQuantityMicros() int64 {
+	if x != nil {
+		return x.QuantityMicros
 	}
 	return 0
 }
@@ -150,12 +160,14 @@ var File_ibctl_data_v1_position_proto protoreflect.FileDescriptor
 
 const file_ibctl_data_v1_position_proto_rawDesc = "" +
 	"\n" +
-	"\x1cibctl/data/v1/position.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1dstandard/money/v1/money.proto\"\xf5\b\n" +
+	"\x1cibctl/data/v1/position.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1dstandard/money/v1/money.proto\"\xbf\t\n" +
 	"\bPosition\x12\x1e\n" +
 	"\x06symbol\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x06symbol\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12-\n" +
-	"\x0easset_category\x18\x03 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\rassetCategory\x12\x1a\n" +
-	"\bquantity\x18\x04 \x01(\x03R\bquantity\x12J\n" +
+	"\x0easset_category\x18\x03 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\rassetCategory\x12%\n" +
+	"\x0equantity_units\x18\x04 \x01(\x03R\rquantityUnits\x12=\n" +
+	"\x0fquantity_micros\x18\n" +
+	" \x01(\x03B\x14\xbaH\x11\"\x0f\x18\xbf\x84=(\xc1\xfb\xc2\xff\xff\xff\xff\xff\xff\x01R\x0equantityMicros\x12J\n" +
 	"\x10cost_basis_price\x18\x05 \x01(\v2\x18.standard.money.v1.MoneyB\x06\xbaH\x03\xc8\x01\x01R\x0ecostBasisPrice\x12C\n" +
 	"\fmarket_price\x18\x06 \x01(\v2\x18.standard.money.v1.MoneyB\x06\xbaH\x03\xc8\x01\x01R\vmarketPrice\x12C\n" +
 	"\fmarket_value\x18\a \x01(\v2\x18.standard.money.v1.MoneyB\x06\xbaH\x03\xc8\x01\x01R\vmarketValue\x12H\n" +

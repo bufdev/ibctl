@@ -22,8 +22,14 @@ message TaxLot {
   string symbol = 1 [(buf.validate.field).required = true];
   // The date the lot was opened (trade date of the buy).
   standard.time.v1.Date open_date = 2 [(buf.validate.field).required = true];
-  // The number of shares remaining in this lot.
-  int64 quantity = 3;
+  // The whole units of the quantity remaining in this lot.
+  int64 quantity_units = 3;
+  // The micro units of the quantity remaining.
+  // Must be between -999999 and 999999. Sign must match quantity_units.
+  int64 quantity_micros = 7 [
+    (buf.validate.field).int64.gte = -999999,
+    (buf.validate.field).int64.lte = 999999
+  ];
   // The cost basis price per share.
   standard.money.v1.Money cost_basis_price = 4 [(buf.validate.field).required = true];
   // The three-letter ISO 4217 currency code for this tax lot.
@@ -41,8 +47,14 @@ message ComputedPosition {
 
   // The ticker symbol.
   string symbol = 1 [(buf.validate.field).required = true];
-  // The total number of shares across all tax lots.
-  int64 quantity = 2;
+  // The whole units of the total quantity across all tax lots.
+  int64 quantity_units = 2;
+  // The micro units of the total quantity.
+  // Must be between -999999 and 999999. Sign must match quantity_units.
+  int64 quantity_micros = 5 [
+    (buf.validate.field).int64.gte = -999999,
+    (buf.validate.field).int64.lte = 999999
+  ];
   // The weighted average cost basis price per share.
   standard.money.v1.Money average_cost_basis_price = 3 [(buf.validate.field).required = true];
   // The three-letter ISO 4217 currency code for this position.

@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"time"
 
 	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
@@ -489,8 +488,8 @@ func xmlTradeToProto(xmlTrade *ibkrflexquery.XMLTrade) (*datav1.Trade, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing fifo pnl realized: %w", err)
 	}
-	// Parse the quantity as an integer.
-	quantity, err := strconv.ParseInt(xmlTrade.Quantity, 10, 64)
+	// Parse the quantity as a decimal (supports fractional shares).
+	quantityUnits, quantityMicros, err := moneypb.ParseDecimalToUnitsMicros(xmlTrade.Quantity)
 	if err != nil {
 		return nil, fmt.Errorf("parsing quantity %q: %w", xmlTrade.Quantity, err)
 	}
@@ -502,7 +501,8 @@ func xmlTradeToProto(xmlTrade *ibkrflexquery.XMLTrade) (*datav1.Trade, error) {
 		Description:     xmlTrade.Description,
 		AssetCategory:   xmlTrade.AssetCategory,
 		Side:            parseTradeSide(xmlTrade.BuySell),
-		Quantity:        quantity,
+		QuantityUnits:   quantityUnits,
+		QuantityMicros:  quantityMicros,
 		TradePrice:      tradePrice,
 		Proceeds:        proceeds,
 		Commission:      commission,
@@ -531,8 +531,8 @@ func xmlPositionToProto(xmlPosition *ibkrflexquery.XMLPosition) (*datav1.Positio
 	if err != nil {
 		return nil, fmt.Errorf("parsing fifo pnl unrealized: %w", err)
 	}
-	// Parse the quantity as an integer.
-	quantity, err := strconv.ParseInt(xmlPosition.Quantity, 10, 64)
+	// Parse the quantity as a decimal (supports fractional shares).
+	quantityUnits, quantityMicros, err := moneypb.ParseDecimalToUnitsMicros(xmlPosition.Quantity)
 	if err != nil {
 		return nil, fmt.Errorf("parsing quantity %q: %w", xmlPosition.Quantity, err)
 	}
@@ -540,7 +540,8 @@ func xmlPositionToProto(xmlPosition *ibkrflexquery.XMLPosition) (*datav1.Positio
 		Symbol:            xmlPosition.Symbol,
 		Description:       xmlPosition.Description,
 		AssetCategory:     xmlPosition.AssetCategory,
-		Quantity:          quantity,
+		QuantityUnits:     quantityUnits,
+		QuantityMicros:    quantityMicros,
 		CostBasisPrice:    costBasisPrice,
 		MarketPrice:       marketPrice,
 		MarketValue:       marketValue,

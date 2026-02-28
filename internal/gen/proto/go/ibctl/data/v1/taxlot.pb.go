@@ -35,8 +35,11 @@ type TaxLot struct {
 	Symbol string `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
 	// The date the lot was opened (trade date of the buy).
 	OpenDate *v1.Date `protobuf:"bytes,2,opt,name=open_date,json=openDate,proto3" json:"open_date,omitempty"`
-	// The number of shares remaining in this lot.
-	Quantity int64 `protobuf:"varint,3,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	// The whole units of the quantity remaining in this lot.
+	QuantityUnits int64 `protobuf:"varint,3,opt,name=quantity_units,json=quantityUnits,proto3" json:"quantity_units,omitempty"`
+	// The micro units of the quantity remaining.
+	// Must be between -999999 and 999999. Sign must match quantity_units.
+	QuantityMicros int64 `protobuf:"varint,7,opt,name=quantity_micros,json=quantityMicros,proto3" json:"quantity_micros,omitempty"`
 	// The cost basis price per share.
 	CostBasisPrice *v11.Money `protobuf:"bytes,4,opt,name=cost_basis_price,json=costBasisPrice,proto3" json:"cost_basis_price,omitempty"`
 	// The three-letter ISO 4217 currency code for this tax lot.
@@ -90,9 +93,16 @@ func (x *TaxLot) GetOpenDate() *v1.Date {
 	return nil
 }
 
-func (x *TaxLot) GetQuantity() int64 {
+func (x *TaxLot) GetQuantityUnits() int64 {
 	if x != nil {
-		return x.Quantity
+		return x.QuantityUnits
+	}
+	return 0
+}
+
+func (x *TaxLot) GetQuantityMicros() int64 {
+	if x != nil {
+		return x.QuantityMicros
 	}
 	return 0
 }
@@ -116,8 +126,11 @@ type ComputedPosition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The ticker symbol.
 	Symbol string `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
-	// The total number of shares across all tax lots.
-	Quantity int64 `protobuf:"varint,2,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	// The whole units of the total quantity across all tax lots.
+	QuantityUnits int64 `protobuf:"varint,2,opt,name=quantity_units,json=quantityUnits,proto3" json:"quantity_units,omitempty"`
+	// The micro units of the total quantity.
+	// Must be between -999999 and 999999. Sign must match quantity_units.
+	QuantityMicros int64 `protobuf:"varint,5,opt,name=quantity_micros,json=quantityMicros,proto3" json:"quantity_micros,omitempty"`
 	// The weighted average cost basis price per share.
 	AverageCostBasisPrice *v11.Money `protobuf:"bytes,3,opt,name=average_cost_basis_price,json=averageCostBasisPrice,proto3" json:"average_cost_basis_price,omitempty"`
 	// The three-letter ISO 4217 currency code for this position.
@@ -164,9 +177,16 @@ func (x *ComputedPosition) GetSymbol() string {
 	return ""
 }
 
-func (x *ComputedPosition) GetQuantity() int64 {
+func (x *ComputedPosition) GetQuantityUnits() int64 {
 	if x != nil {
-		return x.Quantity
+		return x.QuantityUnits
+	}
+	return 0
+}
+
+func (x *ComputedPosition) GetQuantityMicros() int64 {
+	if x != nil {
+		return x.QuantityMicros
 	}
 	return 0
 }
@@ -189,18 +209,20 @@ var File_ibctl_data_v1_taxlot_proto protoreflect.FileDescriptor
 
 const file_ibctl_data_v1_taxlot_proto_rawDesc = "" +
 	"\n" +
-	"\x1aibctl/data/v1/taxlot.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1dstandard/money/v1/money.proto\x1a\x1bstandard/time/v1/date.proto\"\xa6\x03\n" +
+	"\x1aibctl/data/v1/taxlot.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1dstandard/money/v1/money.proto\x1a\x1bstandard/time/v1/date.proto\"\xf0\x03\n" +
 	"\x06TaxLot\x12\x1e\n" +
 	"\x06symbol\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x06symbol\x12;\n" +
-	"\topen_date\x18\x02 \x01(\v2\x16.standard.time.v1.DateB\x06\xbaH\x03\xc8\x01\x01R\bopenDate\x12\x1a\n" +
-	"\bquantity\x18\x03 \x01(\x03R\bquantity\x12J\n" +
+	"\topen_date\x18\x02 \x01(\v2\x16.standard.time.v1.DateB\x06\xbaH\x03\xc8\x01\x01R\bopenDate\x12%\n" +
+	"\x0equantity_units\x18\x03 \x01(\x03R\rquantityUnits\x12=\n" +
+	"\x0fquantity_micros\x18\a \x01(\x03B\x14\xbaH\x11\"\x0f\x18\xbf\x84=(\xc1\xfb\xc2\xff\xff\xff\xff\xff\xff\x01R\x0equantityMicros\x12J\n" +
 	"\x10cost_basis_price\x18\x04 \x01(\v2\x18.standard.money.v1.MoneyB\x06\xbaH\x03\xc8\x01\x01R\x0ecostBasisPrice\x126\n" +
 	"\rcurrency_code\x18\x05 \x01(\tB\x11\xbaH\x0er\f2\n" +
 	"^[A-Z]{3}$R\fcurrencyCode:\x9e\x01\xbaH\x9a\x01\x1a\x97\x01\n" +
-	"\x19cost_basis_price_currency\x12?cost_basis_price currency_code must match tax lot currency_code\x1a9this.cost_basis_price.currency_code == this.currency_code\"\xa4\x03\n" +
+	"\x19cost_basis_price_currency\x12?cost_basis_price currency_code must match tax lot currency_code\x1a9this.cost_basis_price.currency_code == this.currency_code\"\xee\x03\n" +
 	"\x10ComputedPosition\x12\x1e\n" +
-	"\x06symbol\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x06symbol\x12\x1a\n" +
-	"\bquantity\x18\x02 \x01(\x03R\bquantity\x12Y\n" +
+	"\x06symbol\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x06symbol\x12%\n" +
+	"\x0equantity_units\x18\x02 \x01(\x03R\rquantityUnits\x12=\n" +
+	"\x0fquantity_micros\x18\x05 \x01(\x03B\x14\xbaH\x11\"\x0f\x18\xbf\x84=(\xc1\xfb\xc2\xff\xff\xff\xff\xff\xff\x01R\x0equantityMicros\x12Y\n" +
 	"\x18average_cost_basis_price\x18\x03 \x01(\v2\x18.standard.money.v1.MoneyB\x06\xbaH\x03\xc8\x01\x01R\x15averageCostBasisPrice\x126\n" +
 	"\rcurrency_code\x18\x04 \x01(\tB\x11\xbaH\x0er\f2\n" +
 	"^[A-Z]{3}$R\fcurrencyCode:\xc0\x01\xbaH\xbc\x01\x1a\xb9\x01\n" +

@@ -66,6 +66,13 @@ func MoneyFromMicros(currencyCode string, totalMicros int64) *moneyv1.Money {
 	}
 }
 
+// ParseDecimalToUnitsMicros parses a decimal string (e.g. "123.456789") into units and micros.
+// Exported for use by packages that need to parse decimal values into the units/micros pattern
+// (e.g., quantities, exchange rates) without creating a Money proto.
+func ParseDecimalToUnitsMicros(value string) (int64, int64, error) {
+	return parseDecimalToUnitsMicros(value)
+}
+
 // parseDecimalToUnitsMicros parses a decimal string (e.g. "123.456789") into units and micros.
 func parseDecimalToUnitsMicros(value string) (int64, int64, error) {
 	if value == "" {

@@ -6,8 +6,10 @@
 package ibctlholdings
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
@@ -23,8 +25,10 @@ type HoldingOverview struct {
 	LastPrice string `json:"last_price"`
 	// AveragePrice is the weighted average cost basis price per share.
 	AveragePrice string `json:"average_price"`
-	// Position is the total number of shares held.
-	Position int64 `json:"position"`
+	// PositionUnits is the whole units of the total quantity held.
+	PositionUnits int64 `json:"position_units"`
+	// PositionMicros is the micro units of the total quantity held.
+	PositionMicros int64 `json:"position_micros"`
 	// Category is the user-defined asset category (e.g., "EQUITY").
 	Category string `json:"category,omitempty"`
 	// Type is the user-defined asset type (e.g., "STOCK", "ETF").
@@ -38,13 +42,33 @@ func HoldingsOverviewHeaders() []string {
 	return []string{"SYMBOL", "LAST PRICE", "AVG PRICE", "POSITION", "CATEGORY", "TYPE", "SECTOR"}
 }
 
+// formatQuantity formats units/micros as a decimal string for table/CSV display.
+func formatQuantity(units int64, micros int64) string {
+	if micros == 0 {
+		return strconv.FormatInt(units, 10)
+	}
+	sign := ""
+	if units < 0 || (units == 0 && micros < 0) {
+		sign = "-"
+		if units < 0 {
+			units = -units
+		}
+		if micros < 0 {
+			micros = -micros
+		}
+	}
+	decimalStr := fmt.Sprintf("%06d", micros)
+	decimalStr = strings.TrimRight(decimalStr, "0")
+	return fmt.Sprintf("%s%d.%s", sign, units, decimalStr)
+}
+
 // HoldingOverviewToRow converts a HoldingOverview to a string slice for table/CSV output.
 func HoldingOverviewToRow(h *HoldingOverview) []string {
 	return []string{
 		h.Symbol,
 		h.LastPrice,
 		h.AveragePrice,
-		strconv.FormatInt(h.Position, 10),
+		formatQuantity(h.PositionUnits, h.PositionMicros),
 		h.Category,
 		h.Type,
 		h.Sector,
@@ -74,10 +98,11 @@ func GetHoldingsOverview(trades []*datav1.Trade, positions []*datav1.Position, c
 	for _, pos := range computedPositions {
 		symbol := pos.GetSymbol()
 		holding := &HoldingOverview{
-			Symbol:       symbol,
-			LastPrice:    marketPrices[symbol],
-			AveragePrice: moneypb.MoneyValueToString(pos.GetAverageCostBasisPrice()),
-			Position:     pos.GetQuantity(),
+			Symbol:         symbol,
+			LastPrice:      marketPrices[symbol],
+			AveragePrice:   moneypb.MoneyValueToString(pos.GetAverageCostBasisPrice()),
+			PositionUnits:  pos.GetQuantityUnits(),
+			PositionMicros: pos.GetQuantityMicros(),
 		}
 		// Merge symbol classification from config.
 		if symbolConfig, ok := config.SymbolConfigs[symbol]; ok {
