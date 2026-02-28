@@ -13,11 +13,11 @@ import (
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/ibctlcmd"
 )
 
-// NewCommand returns a new download command that downloads and caches IBKR data.
+// NewCommand returns a new download command that pre-caches IBKR data.
 func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 	return &appcmd.Command{
 		Use:   name,
-		Short: "Download and cache IBKR data via Flex Query API",
+		Short: "Pre-cache IBKR data via Flex Query API",
 		Args:  appcmd.NoArgs,
 		Run: builder.NewRunFunc(
 			func(ctx context.Context, container appext.Container) error {
@@ -33,6 +33,6 @@ func run(ctx context.Context, container appext.Container) error {
 	if err != nil {
 		return err
 	}
-	// Always re-download fresh data.
+	// Download full history.
 	return downloader.Download(ctx)
 }

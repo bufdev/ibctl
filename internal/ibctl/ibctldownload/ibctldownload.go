@@ -38,8 +38,12 @@ const windowDays = 365
 // Downloader is the interface for downloading and caching IBKR data.
 type Downloader interface {
 	// Download fetches IBKR data via the Flex Query API and caches it as JSON files.
-	// Always re-downloads fresh data.
+	// Makes multiple API calls in 365-day windows going backwards until no more
+	// trades are found. Always re-downloads fresh data.
 	Download(ctx context.Context) error
+	// DownloadWindow fetches a single date window and caches the results.
+	// Useful for testing whether the IBKR API supports specific historical date ranges.
+	DownloadWindow(ctx context.Context, fromDate xtime.Date, toDate xtime.Date) error
 	// EnsureDownloaded checks if cached data files exist and downloads if they don't.
 	EnsureDownloaded(ctx context.Context) error
 }
@@ -84,40 +88,83 @@ func (d *downloader) EnsureDownloaded(ctx context.Context) error {
 	return d.Download(ctx)
 }
 
+func (d *downloader) DownloadWindow(ctx context.Context, fromDate xtime.Date, toDate xtime.Date) error {
+	// Create the data directory if needed.
+	if err := os.MkdirAll(d.dataDirV1Path, 0o755); err != nil {
+		return fmt.Errorf("creating data directory: %w", err)
+	}
+	// Make a single API call for the specified date range.
+	d.logger.Info("downloading single window", "from", fromDate.String(), "to", toDate.String())
+	statement, err := d.flexQueryClient.Download(ctx, d.ibkrToken, d.config.IBKRQueryID, fromDate, toDate)
+	if err != nil {
+		return fmt.Errorf("downloading window (%s to %s): %w", fromDate.String(), toDate.String(), err)
+	}
+	d.logger.Info("window downloaded",
+		"trades", len(statement.Trades),
+		"positions", len(statement.OpenPositions),
+		"cash_transactions", len(statement.CashTransactions),
+	)
+	// Convert and write results using the same pipeline as Download.
+	return d.processAndWrite(ctx, statement.Trades, statement.OpenPositions, statement.CashTransactions)
+}
+
 func (d *downloader) Download(ctx context.Context) error {
-	// Step 1: Create the data directory if needed.
+	// Create the data directory if needed.
 	if err := os.MkdirAll(d.dataDirV1Path, 0o755); err != nil {
 		return fmt.Errorf("creating data directory: %w", err)
 	}
 	d.logger.Info("data directory ready", "path", d.dataDirV1Path)
 
-	// Step 2: Fetch data across multiple 365-day windows going backwards in time.
-	// The most recent window also provides the current positions snapshot.
-	allXMLTrades, positions, allXMLCashTransactions, err := d.downloadAllWindows(ctx)
+	// Fetch data across multiple 365-day windows going backwards in time.
+	allXMLTrades, xmlPositions, allXMLCashTransactions, err := d.downloadAllWindows(ctx)
 	if err != nil {
 		return err
 	}
 
-	// Step 3: Convert XML trades to proto and write trades.json.
-	trades, err := d.convertTrades(allXMLTrades)
+	// Process and write all data files.
+	return d.processAndWrite(ctx, allXMLTrades, xmlPositions, allXMLCashTransactions)
+}
+
+// processAndWrite converts XML data to protos, merges with existing cached data,
+// computes tax lots, verifies positions, and writes all JSON data files.
+// This is idempotent — running it multiple times with overlapping data produces
+// the same result. Trades are deduplicated by trade ID, exchange rates by
+// date+currency pair. Positions are always overwritten (they are a point-in-time
+// snapshot). Tax lots and metadata are recomputed from the full merged trade set.
+func (d *downloader) processAndWrite(
+	ctx context.Context,
+	xmlTrades []ibkrflexquery.XMLTrade,
+	xmlPositions []ibkrflexquery.XMLPosition,
+	xmlCashTransactions []ibkrflexquery.XMLCashTransaction,
+) error {
+	// Convert newly downloaded XML trades to protos.
+	newTrades, err := d.convertTrades(xmlTrades)
 	if err != nil {
 		return err
 	}
+	// Merge new trades with existing cached trades, deduplicating by trade ID.
+	trades := d.mergeTradesWithCache(newTrades)
 	tradesPath := filepath.Join(d.dataDirV1Path, "trades.json")
 	if err := protoio.WriteMessagesJSON(tradesPath, trades); err != nil {
 		return fmt.Errorf("writing trades: %w", err)
 	}
 	d.logger.Info("trades written", "count", len(trades), "path", tradesPath)
 
-	// Step 4: Write positions.json (from most recent window only).
+	// Positions are always overwritten with the latest snapshot.
+	positions, err := d.convertPositions(xmlPositions)
+	if err != nil {
+		return err
+	}
 	positionsPath := filepath.Join(d.dataDirV1Path, "positions.json")
 	if err := protoio.WriteMessagesJSON(positionsPath, positions); err != nil {
 		return fmt.Errorf("writing positions: %w", err)
 	}
 	d.logger.Info("positions written", "count", len(positions), "path", positionsPath)
 
-	// Step 5: Extract FX rates from cash transactions and write exchange_rates.json.
-	exchangeRates := d.extractExchangeRates(allXMLCashTransactions)
+	// Extract new FX rates from cash transactions and merge with cached rates.
+	newExchangeRates := d.extractExchangeRates(xmlCashTransactions)
+	exchangeRates := d.mergeExchangeRatesWithCache(newExchangeRates)
+	// Fetch any rates still missing from frankfurter.dev.
 	if err := d.fetchMissingExchangeRates(ctx, exchangeRates, trades); err != nil {
 		d.logger.Warn("failed to fetch missing exchange rates", "error", err)
 	}
@@ -127,7 +174,7 @@ func (d *downloader) Download(ctx context.Context) error {
 	}
 	d.logger.Info("exchange rates written", "count", len(exchangeRates), "path", exchangeRatesPath)
 
-	// Step 6: Compute tax lots and write tax_lots.json.
+	// Compute tax lots from the full merged trade set.
 	taxLots, err := ibctltaxlot.ComputeTaxLots(trades)
 	if err != nil {
 		return fmt.Errorf("computing tax lots: %w", err)
@@ -138,7 +185,7 @@ func (d *downloader) Download(ctx context.Context) error {
 	}
 	d.logger.Info("tax lots written", "count", len(taxLots), "path", taxLotsPath)
 
-	// Step 7: Compute positions from tax lots and verify against IBKR-reported positions.
+	// Compute positions from tax lots and verify against IBKR-reported positions.
 	computedPositions := ibctltaxlot.ComputePositions(taxLots)
 	verificationNotes := ibctltaxlot.VerifyPositions(computedPositions, positions)
 	positionsVerified := len(verificationNotes) == 0
@@ -150,7 +197,7 @@ func (d *downloader) Download(ctx context.Context) error {
 		d.logger.Info("all positions verified successfully")
 	}
 
-	// Step 8: Write metadata.json.
+	// Write metadata.json.
 	metadata := &datav1.Metadata{
 		DownloadTime:      timestamppb.Now(),
 		PositionsVerified: positionsVerified,
@@ -164,6 +211,103 @@ func (d *downloader) Download(ctx context.Context) error {
 	return nil
 }
 
+// mergeTradesWithCache reads existing cached trades and merges new trades into
+// them, deduplicating by trade ID. New trades take precedence over cached trades
+// with the same ID.
+func (d *downloader) mergeTradesWithCache(newTrades []*datav1.Trade) []*datav1.Trade {
+	tradesPath := filepath.Join(d.dataDirV1Path, "trades.json")
+	cachedTrades, err := protoio.ReadMessagesJSON(tradesPath, func() *datav1.Trade { return &datav1.Trade{} })
+	if err != nil {
+		// No cache or read error — start fresh with just the new trades.
+		return newTrades
+	}
+	// Build a map of all trades by trade ID, starting with cached trades.
+	tradeMap := make(map[string]*datav1.Trade, len(cachedTrades)+len(newTrades))
+	for _, trade := range cachedTrades {
+		tradeMap[trade.GetTradeId()] = trade
+	}
+	// New trades overwrite cached trades with the same ID.
+	for _, trade := range newTrades {
+		tradeMap[trade.GetTradeId()] = trade
+	}
+	// Collect and sort for deterministic output.
+	merged := make([]*datav1.Trade, 0, len(tradeMap))
+	for _, trade := range tradeMap {
+		merged = append(merged, trade)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		dateI := tradeDateString(merged[i])
+		dateJ := tradeDateString(merged[j])
+		if dateI != dateJ {
+			return dateI < dateJ
+		}
+		return merged[i].GetTradeId() < merged[j].GetTradeId()
+	})
+	d.logger.Info("merged trades", "cached", len(cachedTrades), "new", len(newTrades), "merged", len(merged))
+	return merged
+}
+
+// mergeExchangeRatesWithCache reads existing cached exchange rates and merges new
+// rates into them, deduplicating by date + base currency + quote currency.
+func (d *downloader) mergeExchangeRatesWithCache(newRates []*datav1.ExchangeRate) []*datav1.ExchangeRate {
+	exchangeRatesPath := filepath.Join(d.dataDirV1Path, "exchange_rates.json")
+	cachedRates, err := protoio.ReadMessagesJSON(exchangeRatesPath, func() *datav1.ExchangeRate { return &datav1.ExchangeRate{} })
+	if err != nil {
+		// No cache or read error — start fresh with just the new rates.
+		return newRates
+	}
+	// Build a map of all rates by date+currencies, starting with cached rates.
+	type rateKey struct {
+		date          string
+		baseCurrency  string
+		quoteCurrency string
+	}
+	rateMap := make(map[rateKey]*datav1.ExchangeRate, len(cachedRates)+len(newRates))
+	for _, rate := range cachedRates {
+		key := rateKey{
+			date:          exchangeRateDateString(rate),
+			baseCurrency:  rate.GetBaseCurrencyCode(),
+			quoteCurrency: rate.GetQuoteCurrencyCode(),
+		}
+		rateMap[key] = rate
+	}
+	// New rates overwrite cached rates with the same key.
+	for _, rate := range newRates {
+		key := rateKey{
+			date:          exchangeRateDateString(rate),
+			baseCurrency:  rate.GetBaseCurrencyCode(),
+			quoteCurrency: rate.GetQuoteCurrencyCode(),
+		}
+		rateMap[key] = rate
+	}
+	// Collect and sort for deterministic output.
+	merged := make([]*datav1.ExchangeRate, 0, len(rateMap))
+	for _, rate := range rateMap {
+		merged = append(merged, rate)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		return exchangeRateDateString(merged[i]) < exchangeRateDateString(merged[j])
+	})
+	d.logger.Info("merged exchange rates", "cached", len(cachedRates), "new", len(newRates), "merged", len(merged))
+	return merged
+}
+
+// tradeDateString returns a sortable date string from a trade's trade_date.
+func tradeDateString(trade *datav1.Trade) string {
+	if d := trade.GetTradeDate(); d != nil {
+		return fmt.Sprintf("%04d-%02d-%02d", d.GetYear(), d.GetMonth(), d.GetDay())
+	}
+	return ""
+}
+
+// exchangeRateDateString returns a sortable date string from an exchange rate's date.
+func exchangeRateDateString(rate *datav1.ExchangeRate) string {
+	if d := rate.GetDate(); d != nil {
+		return fmt.Sprintf("%04d-%02d-%02d", d.GetYear(), d.GetMonth(), d.GetDay())
+	}
+	return ""
+}
+
 // downloadAllWindows fetches data across multiple 365-day windows going backwards
 // in time. Trades and cash transactions are accumulated and deduplicated across
 // all windows. Positions are taken from the most recent window only (they are a
@@ -171,7 +315,7 @@ func (d *downloader) Download(ctx context.Context) error {
 // indicating the beginning of the account has been reached.
 func (d *downloader) downloadAllWindows(ctx context.Context) (
 	[]ibkrflexquery.XMLTrade,
-	[]*datav1.Position,
+	[]ibkrflexquery.XMLPosition,
 	[]ibkrflexquery.XMLCashTransaction,
 	error,
 ) {
@@ -179,7 +323,8 @@ func (d *downloader) downloadAllWindows(ctx context.Context) (
 	seenTradeIDs := make(map[string]bool)
 	var allTrades []ibkrflexquery.XMLTrade
 	var allCashTransactions []ibkrflexquery.XMLCashTransaction
-	var positions []*datav1.Position
+	// Positions from the most recent window only (point-in-time snapshot).
+	var positions []ibkrflexquery.XMLPosition
 
 	today := xtime.TimeToDate(time.Now())
 	for window := range 100 { // Safety limit to prevent infinite loops.
@@ -195,11 +340,7 @@ func (d *downloader) downloadAllWindows(ctx context.Context) (
 
 		// Positions: take from the most recent window only (window 0).
 		if window == 0 {
-			convertedPositions, err := d.convertPositions(statement.OpenPositions)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			positions = convertedPositions
+			positions = statement.OpenPositions
 		}
 
 		// Accumulate trades, deduplicating by trade ID.
