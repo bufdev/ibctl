@@ -14,7 +14,9 @@ import "standard/time/v1/date.proto";
 // from a previous broker.
 enum ImportedTransactionType {
   IMPORTED_TRANSACTION_TYPE_UNSPECIFIED = 0;
+  // Security purchase.
   IMPORTED_TRANSACTION_TYPE_BUY = 1;
+  // Security sale.
   IMPORTED_TRANSACTION_TYPE_SELL = 2;
   // Stock split (quantity change, price may be zero).
   IMPORTED_TRANSACTION_TYPE_SPLIT = 3;
@@ -22,26 +24,71 @@ enum ImportedTransactionType {
   IMPORTED_TRANSACTION_TYPE_STOCK_DIVIDEND = 4;
   // Option or security expiry.
   IMPORTED_TRANSACTION_TYPE_EXPIRY = 5;
+  // Security redemption (e.g., bond maturity, fund liquidation).
+  IMPORTED_TRANSACTION_TYPE_REDEMPTION = 6;
+  // Cash dividend payment.
+  IMPORTED_TRANSACTION_TYPE_DIVIDEND = 7;
+  // Interest income or expense.
+  IMPORTED_TRANSACTION_TYPE_INTEREST = 8;
+  // Fee or commission.
+  IMPORTED_TRANSACTION_TYPE_FEE = 9;
+  // Withholding tax.
+  IMPORTED_TRANSACTION_TYPE_WITHHOLDING_TAX = 10;
+  // Transfer in from another account or broker.
+  IMPORTED_TRANSACTION_TYPE_TRANSFER_IN = 11;
+  // Transfer out to another account or broker.
+  IMPORTED_TRANSACTION_TYPE_TRANSFER_OUT = 12;
+  // Cash deposit.
+  IMPORTED_TRANSACTION_TYPE_DEPOSIT = 13;
+  // Cash withdrawal.
+  IMPORTED_TRANSACTION_TYPE_WITHDRAWAL = 14;
+  // Other/adjustment (e.g., cost adjustments, name changes, journal entries).
+  IMPORTED_TRANSACTION_TYPE_OTHER = 15;
 }
 
 // ImportedTransaction represents a normalized transaction from a previous broker
-// These are permanent seed data imported once from the
+// (e.g., UBS, RBC). These are permanent seed data imported once from the
 // financemigrate project and stored in the seed directory.
+//
+// The original broker data was normalized by financemigrate into a common format
+// across UBS and RBC transaction histories. ibctl computes FIFO tax lots from
+// the buy/sell/split/expiry/redemption transactions at read time. Other types
+// (dividends, interest, fees, transfers) are stored for income tracking and
+// audit trail purposes.
 message ImportedTransaction {
   // The account alias this transaction belongs to (e.g., "individual").
   string account_id = 1 [(buf.validate.field).required = true];
-  // The settlement date of the transaction.
+  // The date of the transaction (settlement date if available, otherwise trade date).
   standard.time.v1.Date date = 2 [(buf.validate.field).required = true];
   // The type of transaction.
   ImportedTransactionType type = 3 [(buf.validate.field).enum.not_in = 0];
   // The ticker symbol (using the previous broker's symbol format).
-  string symbol = 4 [(buf.validate.field).required = true];
+  string symbol = 4;
   // The IBKR symbol (after alias mapping). Used for FIFO matching.
-  string ibkr_symbol = 5 [(buf.validate.field).required = true];
-  // A human-readable description of the security.
+  // Empty for non-security transactions (e.g., interest, fees, deposits).
+  string ibkr_symbol = 5;
+  // A human-readable description of the security or transaction.
   string description = 6;
-  // The quantity. Positive for buys, negative for sells.
+  // The quantity. Positive for buys/inflows, negative for sells/outflows.
+  // Zero for cash-only transactions (dividends, interest, fees).
   int64 quantity = 7;
-  // The price per unit. Always positive. May be zero for splits and expiries.
+  // The price per unit. Always positive. May be zero for splits, expiries,
+  // dividends, interest, and fees.
   standard.money.v1.Money price = 8;
+  // The total monetary amount of the transaction.
+  // For dividends/interest/fees, this is the cash amount.
+  // For trades, this may be the net proceeds or cost.
+  standard.money.v1.Money amount = 9;
+  // The currency code for the transaction (ISO 4217).
+  string currency_code = 10;
+  // The source broker (e.g., "ubs", "rbc").
+  string source = 11;
+  // The original broker's transaction type or entry code before normalization.
+  string original_type = 12;
+  // Security identifier (e.g., ISIN, CUSIP) if available.
+  string security_id = 13;
+  // Tax amount withheld, if applicable.
+  standard.money.v1.Money tax = 14;
+  // Accrued interest on bond transactions.
+  standard.money.v1.Money accrued_interest = 15;
 }

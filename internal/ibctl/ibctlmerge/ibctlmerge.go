@@ -92,8 +92,12 @@ func Merge(
 			importedTxns, err := protoio.ReadMessagesJSON(seedTxnPath, func() *datav1.ImportedTransaction { return &datav1.ImportedTransaction{} })
 			if err == nil {
 				for _, txn := range importedTxns {
+					// Only security transactions (buys, sells, splits, etc.) become trades.
+					// Non-security transactions (dividends, interest, fees) return nil.
 					trade := importedTransactionToTrade(txn)
-					allTrades = append(allTrades, trade)
+					if trade != nil {
+						allTrades = append(allTrades, trade)
+					}
 				}
 			}
 		}
@@ -238,10 +242,13 @@ func generateTradeID(symbol string, dateTime time.Time, quantity string, price s
 }
 
 // importedTransactionToTrade converts an ImportedTransaction (from the previous broker)
-// to a Trade proto for FIFO processing. Uses the ibkr_symbol field for the symbol
-// so it matches IBKR's naming convention.
+// to a Trade proto for FIFO processing. Returns nil for non-security transactions
+// (dividends, interest, fees, transfers, deposits, withdrawals) that don't affect
+// FIFO lot computation.
 func importedTransactionToTrade(txn *datav1.ImportedTransaction) *datav1.Trade {
 	// Map imported transaction type to trade side.
+	// Non-security transactions return nil — they're stored for audit/income tracking
+	// but don't participate in FIFO.
 	var side datav1.TradeSide
 	switch txn.GetType() {
 	case datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_BUY,
@@ -249,19 +256,29 @@ func importedTransactionToTrade(txn *datav1.ImportedTransaction) *datav1.Trade {
 		// Buys and stock dividends add to position.
 		side = datav1.TradeSide_TRADE_SIDE_BUY
 	case datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_SELL,
-		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_EXPIRY:
-		// Sells and expiries reduce position.
+		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_EXPIRY,
+		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_REDEMPTION:
+		// Sells, expiries, and redemptions reduce position.
 		side = datav1.TradeSide_TRADE_SIDE_SELL
 	case datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_SPLIT:
-		// Splits are handled as buys with zero price (quantity adjustment).
+		// Splits are handled as buys or sells with zero price (quantity adjustment).
 		if txn.GetQuantity() >= 0 {
 			side = datav1.TradeSide_TRADE_SIDE_BUY
 		} else {
 			side = datav1.TradeSide_TRADE_SIDE_SELL
 		}
-	case datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_UNSPECIFIED:
-		// Skip unspecified transactions.
-		side = datav1.TradeSide_TRADE_SIDE_UNSPECIFIED
+	case datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_DIVIDEND,
+		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_INTEREST,
+		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_FEE,
+		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_WITHHOLDING_TAX,
+		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_TRANSFER_IN,
+		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_TRANSFER_OUT,
+		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_DEPOSIT,
+		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_WITHDRAWAL,
+		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_OTHER,
+		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_UNSPECIFIED:
+		// Non-security transactions don't affect FIFO.
+		return nil
 	}
 	// Use ibkr_symbol for FIFO matching.
 	symbol := txn.GetIbkrSymbol()

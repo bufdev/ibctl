@@ -34,33 +34,75 @@ type ImportedTransactionType int32
 
 const (
 	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_UNSPECIFIED ImportedTransactionType = 0
-	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_BUY         ImportedTransactionType = 1
-	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_SELL        ImportedTransactionType = 2
+	// Security purchase.
+	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_BUY ImportedTransactionType = 1
+	// Security sale.
+	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_SELL ImportedTransactionType = 2
 	// Stock split (quantity change, price may be zero).
 	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_SPLIT ImportedTransactionType = 3
 	// Stock dividend (shares received as dividend).
 	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_STOCK_DIVIDEND ImportedTransactionType = 4
 	// Option or security expiry.
 	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_EXPIRY ImportedTransactionType = 5
+	// Security redemption (e.g., bond maturity, fund liquidation).
+	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_REDEMPTION ImportedTransactionType = 6
+	// Cash dividend payment.
+	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_DIVIDEND ImportedTransactionType = 7
+	// Interest income or expense.
+	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_INTEREST ImportedTransactionType = 8
+	// Fee or commission.
+	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_FEE ImportedTransactionType = 9
+	// Withholding tax.
+	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_WITHHOLDING_TAX ImportedTransactionType = 10
+	// Transfer in from another account or broker.
+	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_TRANSFER_IN ImportedTransactionType = 11
+	// Transfer out to another account or broker.
+	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_TRANSFER_OUT ImportedTransactionType = 12
+	// Cash deposit.
+	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_DEPOSIT ImportedTransactionType = 13
+	// Cash withdrawal.
+	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_WITHDRAWAL ImportedTransactionType = 14
+	// Other/adjustment (e.g., cost adjustments, name changes, journal entries).
+	ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_OTHER ImportedTransactionType = 15
 )
 
 // Enum value maps for ImportedTransactionType.
 var (
 	ImportedTransactionType_name = map[int32]string{
-		0: "IMPORTED_TRANSACTION_TYPE_UNSPECIFIED",
-		1: "IMPORTED_TRANSACTION_TYPE_BUY",
-		2: "IMPORTED_TRANSACTION_TYPE_SELL",
-		3: "IMPORTED_TRANSACTION_TYPE_SPLIT",
-		4: "IMPORTED_TRANSACTION_TYPE_STOCK_DIVIDEND",
-		5: "IMPORTED_TRANSACTION_TYPE_EXPIRY",
+		0:  "IMPORTED_TRANSACTION_TYPE_UNSPECIFIED",
+		1:  "IMPORTED_TRANSACTION_TYPE_BUY",
+		2:  "IMPORTED_TRANSACTION_TYPE_SELL",
+		3:  "IMPORTED_TRANSACTION_TYPE_SPLIT",
+		4:  "IMPORTED_TRANSACTION_TYPE_STOCK_DIVIDEND",
+		5:  "IMPORTED_TRANSACTION_TYPE_EXPIRY",
+		6:  "IMPORTED_TRANSACTION_TYPE_REDEMPTION",
+		7:  "IMPORTED_TRANSACTION_TYPE_DIVIDEND",
+		8:  "IMPORTED_TRANSACTION_TYPE_INTEREST",
+		9:  "IMPORTED_TRANSACTION_TYPE_FEE",
+		10: "IMPORTED_TRANSACTION_TYPE_WITHHOLDING_TAX",
+		11: "IMPORTED_TRANSACTION_TYPE_TRANSFER_IN",
+		12: "IMPORTED_TRANSACTION_TYPE_TRANSFER_OUT",
+		13: "IMPORTED_TRANSACTION_TYPE_DEPOSIT",
+		14: "IMPORTED_TRANSACTION_TYPE_WITHDRAWAL",
+		15: "IMPORTED_TRANSACTION_TYPE_OTHER",
 	}
 	ImportedTransactionType_value = map[string]int32{
-		"IMPORTED_TRANSACTION_TYPE_UNSPECIFIED":    0,
-		"IMPORTED_TRANSACTION_TYPE_BUY":            1,
-		"IMPORTED_TRANSACTION_TYPE_SELL":           2,
-		"IMPORTED_TRANSACTION_TYPE_SPLIT":          3,
-		"IMPORTED_TRANSACTION_TYPE_STOCK_DIVIDEND": 4,
-		"IMPORTED_TRANSACTION_TYPE_EXPIRY":         5,
+		"IMPORTED_TRANSACTION_TYPE_UNSPECIFIED":     0,
+		"IMPORTED_TRANSACTION_TYPE_BUY":             1,
+		"IMPORTED_TRANSACTION_TYPE_SELL":            2,
+		"IMPORTED_TRANSACTION_TYPE_SPLIT":           3,
+		"IMPORTED_TRANSACTION_TYPE_STOCK_DIVIDEND":  4,
+		"IMPORTED_TRANSACTION_TYPE_EXPIRY":          5,
+		"IMPORTED_TRANSACTION_TYPE_REDEMPTION":      6,
+		"IMPORTED_TRANSACTION_TYPE_DIVIDEND":        7,
+		"IMPORTED_TRANSACTION_TYPE_INTEREST":        8,
+		"IMPORTED_TRANSACTION_TYPE_FEE":             9,
+		"IMPORTED_TRANSACTION_TYPE_WITHHOLDING_TAX": 10,
+		"IMPORTED_TRANSACTION_TYPE_TRANSFER_IN":     11,
+		"IMPORTED_TRANSACTION_TYPE_TRANSFER_OUT":    12,
+		"IMPORTED_TRANSACTION_TYPE_DEPOSIT":         13,
+		"IMPORTED_TRANSACTION_TYPE_WITHDRAWAL":      14,
+		"IMPORTED_TRANSACTION_TYPE_OTHER":           15,
 	}
 )
 
@@ -92,28 +134,53 @@ func (ImportedTransactionType) EnumDescriptor() ([]byte, []int) {
 }
 
 // ImportedTransaction represents a normalized transaction from a previous broker
-// These are permanent seed data imported once from the
+// (e.g., UBS, RBC). These are permanent seed data imported once from the
 // financemigrate project and stored in the seed directory.
+//
+// The original broker data was normalized by financemigrate into a common format
+// across UBS and RBC transaction histories. ibctl computes FIFO tax lots from
+// the buy/sell/split/expiry/redemption transactions at read time. Other types
+// (dividends, interest, fees, transfers) are stored for income tracking and
+// audit trail purposes.
 type ImportedTransaction struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The account alias this transaction belongs to (e.g., "individual").
 	AccountId string `protobuf:"bytes,1,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
-	// The settlement date of the transaction.
+	// The date of the transaction (settlement date if available, otherwise trade date).
 	Date *v1.Date `protobuf:"bytes,2,opt,name=date,proto3" json:"date,omitempty"`
 	// The type of transaction.
 	Type ImportedTransactionType `protobuf:"varint,3,opt,name=type,proto3,enum=ibctl.data.v1.ImportedTransactionType" json:"type,omitempty"`
 	// The ticker symbol (using the previous broker's symbol format).
 	Symbol string `protobuf:"bytes,4,opt,name=symbol,proto3" json:"symbol,omitempty"`
 	// The IBKR symbol (after alias mapping). Used for FIFO matching.
+	// Empty for non-security transactions (e.g., interest, fees, deposits).
 	IbkrSymbol string `protobuf:"bytes,5,opt,name=ibkr_symbol,json=ibkrSymbol,proto3" json:"ibkr_symbol,omitempty"`
-	// A human-readable description of the security.
+	// A human-readable description of the security or transaction.
 	Description string `protobuf:"bytes,6,opt,name=description,proto3" json:"description,omitempty"`
-	// The quantity. Positive for buys, negative for sells.
+	// The quantity. Positive for buys/inflows, negative for sells/outflows.
+	// Zero for cash-only transactions (dividends, interest, fees).
 	Quantity int64 `protobuf:"varint,7,opt,name=quantity,proto3" json:"quantity,omitempty"`
-	// The price per unit. Always positive. May be zero for splits and expiries.
-	Price         *v11.Money `protobuf:"bytes,8,opt,name=price,proto3" json:"price,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// The price per unit. Always positive. May be zero for splits, expiries,
+	// dividends, interest, and fees.
+	Price *v11.Money `protobuf:"bytes,8,opt,name=price,proto3" json:"price,omitempty"`
+	// The total monetary amount of the transaction.
+	// For dividends/interest/fees, this is the cash amount.
+	// For trades, this may be the net proceeds or cost.
+	Amount *v11.Money `protobuf:"bytes,9,opt,name=amount,proto3" json:"amount,omitempty"`
+	// The currency code for the transaction (ISO 4217).
+	CurrencyCode string `protobuf:"bytes,10,opt,name=currency_code,json=currencyCode,proto3" json:"currency_code,omitempty"`
+	// The source broker (e.g., "ubs", "rbc").
+	Source string `protobuf:"bytes,11,opt,name=source,proto3" json:"source,omitempty"`
+	// The original broker's transaction type or entry code before normalization.
+	OriginalType string `protobuf:"bytes,12,opt,name=original_type,json=originalType,proto3" json:"original_type,omitempty"`
+	// Security identifier (e.g., ISIN, CUSIP) if available.
+	SecurityId string `protobuf:"bytes,13,opt,name=security_id,json=securityId,proto3" json:"security_id,omitempty"`
+	// Tax amount withheld, if applicable.
+	Tax *v11.Money `protobuf:"bytes,14,opt,name=tax,proto3" json:"tax,omitempty"`
+	// Accrued interest on bond transactions.
+	AccruedInterest *v11.Money `protobuf:"bytes,15,opt,name=accrued_interest,json=accruedInterest,proto3" json:"accrued_interest,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ImportedTransaction) Reset() {
@@ -202,29 +269,98 @@ func (x *ImportedTransaction) GetPrice() *v11.Money {
 	return nil
 }
 
+func (x *ImportedTransaction) GetAmount() *v11.Money {
+	if x != nil {
+		return x.Amount
+	}
+	return nil
+}
+
+func (x *ImportedTransaction) GetCurrencyCode() string {
+	if x != nil {
+		return x.CurrencyCode
+	}
+	return ""
+}
+
+func (x *ImportedTransaction) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *ImportedTransaction) GetOriginalType() string {
+	if x != nil {
+		return x.OriginalType
+	}
+	return ""
+}
+
+func (x *ImportedTransaction) GetSecurityId() string {
+	if x != nil {
+		return x.SecurityId
+	}
+	return ""
+}
+
+func (x *ImportedTransaction) GetTax() *v11.Money {
+	if x != nil {
+		return x.Tax
+	}
+	return nil
+}
+
+func (x *ImportedTransaction) GetAccruedInterest() *v11.Money {
+	if x != nil {
+		return x.AccruedInterest
+	}
+	return nil
+}
+
 var File_ibctl_data_v1_imported_transaction_proto protoreflect.FileDescriptor
 
 const file_ibctl_data_v1_imported_transaction_proto_rawDesc = "" +
 	"\n" +
-	"(ibctl/data/v1/imported_transaction.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1dstandard/money/v1/money.proto\x1a\x1bstandard/time/v1/date.proto\"\xed\x02\n" +
+	"(ibctl/data/v1/imported_transaction.proto\x12\ribctl.data.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1dstandard/money/v1/money.proto\x1a\x1bstandard/time/v1/date.proto\"\x83\x05\n" +
 	"\x13ImportedTransaction\x12%\n" +
 	"\n" +
 	"account_id\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\taccountId\x122\n" +
 	"\x04date\x18\x02 \x01(\v2\x16.standard.time.v1.DateB\x06\xbaH\x03\xc8\x01\x01R\x04date\x12D\n" +
-	"\x04type\x18\x03 \x01(\x0e2&.ibctl.data.v1.ImportedTransactionTypeB\b\xbaH\x05\x82\x01\x02 \x00R\x04type\x12\x1e\n" +
-	"\x06symbol\x18\x04 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x06symbol\x12'\n" +
-	"\vibkr_symbol\x18\x05 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\n" +
+	"\x04type\x18\x03 \x01(\x0e2&.ibctl.data.v1.ImportedTransactionTypeB\b\xbaH\x05\x82\x01\x02 \x00R\x04type\x12\x16\n" +
+	"\x06symbol\x18\x04 \x01(\tR\x06symbol\x12\x1f\n" +
+	"\vibkr_symbol\x18\x05 \x01(\tR\n" +
 	"ibkrSymbol\x12 \n" +
 	"\vdescription\x18\x06 \x01(\tR\vdescription\x12\x1a\n" +
 	"\bquantity\x18\a \x01(\x03R\bquantity\x12.\n" +
-	"\x05price\x18\b \x01(\v2\x18.standard.money.v1.MoneyR\x05price*\x84\x02\n" +
+	"\x05price\x18\b \x01(\v2\x18.standard.money.v1.MoneyR\x05price\x120\n" +
+	"\x06amount\x18\t \x01(\v2\x18.standard.money.v1.MoneyR\x06amount\x12#\n" +
+	"\rcurrency_code\x18\n" +
+	" \x01(\tR\fcurrencyCode\x12\x16\n" +
+	"\x06source\x18\v \x01(\tR\x06source\x12#\n" +
+	"\roriginal_type\x18\f \x01(\tR\foriginalType\x12\x1f\n" +
+	"\vsecurity_id\x18\r \x01(\tR\n" +
+	"securityId\x12*\n" +
+	"\x03tax\x18\x0e \x01(\v2\x18.standard.money.v1.MoneyR\x03tax\x12C\n" +
+	"\x10accrued_interest\x18\x0f \x01(\v2\x18.standard.money.v1.MoneyR\x0faccruedInterest*\x9d\x05\n" +
 	"\x17ImportedTransactionType\x12)\n" +
 	"%IMPORTED_TRANSACTION_TYPE_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dIMPORTED_TRANSACTION_TYPE_BUY\x10\x01\x12\"\n" +
 	"\x1eIMPORTED_TRANSACTION_TYPE_SELL\x10\x02\x12#\n" +
 	"\x1fIMPORTED_TRANSACTION_TYPE_SPLIT\x10\x03\x12,\n" +
 	"(IMPORTED_TRANSACTION_TYPE_STOCK_DIVIDEND\x10\x04\x12$\n" +
-	" IMPORTED_TRANSACTION_TYPE_EXPIRY\x10\x05B\xc7\x01\n" +
+	" IMPORTED_TRANSACTION_TYPE_EXPIRY\x10\x05\x12(\n" +
+	"$IMPORTED_TRANSACTION_TYPE_REDEMPTION\x10\x06\x12&\n" +
+	"\"IMPORTED_TRANSACTION_TYPE_DIVIDEND\x10\a\x12&\n" +
+	"\"IMPORTED_TRANSACTION_TYPE_INTEREST\x10\b\x12!\n" +
+	"\x1dIMPORTED_TRANSACTION_TYPE_FEE\x10\t\x12-\n" +
+	")IMPORTED_TRANSACTION_TYPE_WITHHOLDING_TAX\x10\n" +
+	"\x12)\n" +
+	"%IMPORTED_TRANSACTION_TYPE_TRANSFER_IN\x10\v\x12*\n" +
+	"&IMPORTED_TRANSACTION_TYPE_TRANSFER_OUT\x10\f\x12%\n" +
+	"!IMPORTED_TRANSACTION_TYPE_DEPOSIT\x10\r\x12(\n" +
+	"$IMPORTED_TRANSACTION_TYPE_WITHDRAWAL\x10\x0e\x12#\n" +
+	"\x1fIMPORTED_TRANSACTION_TYPE_OTHER\x10\x0fB\xc7\x01\n" +
 	"\x11com.ibctl.data.v1B\x18ImportedTransactionProtoP\x01ZBgithub.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1;datav1\xa2\x02\x03IDX\xaa\x02\rIbctl.Data.V1\xca\x02\rIbctl\\Data\\V1\xe2\x02\x19Ibctl\\Data\\V1\\GPBMetadata\xea\x02\x0fIbctl::Data::V1b\x06proto3"
 
 var (
@@ -251,11 +387,14 @@ var file_ibctl_data_v1_imported_transaction_proto_depIdxs = []int32{
 	2, // 0: ibctl.data.v1.ImportedTransaction.date:type_name -> standard.time.v1.Date
 	0, // 1: ibctl.data.v1.ImportedTransaction.type:type_name -> ibctl.data.v1.ImportedTransactionType
 	3, // 2: ibctl.data.v1.ImportedTransaction.price:type_name -> standard.money.v1.Money
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	3, // 3: ibctl.data.v1.ImportedTransaction.amount:type_name -> standard.money.v1.Money
+	3, // 4: ibctl.data.v1.ImportedTransaction.tax:type_name -> standard.money.v1.Money
+	3, // 5: ibctl.data.v1.ImportedTransaction.accrued_interest:type_name -> standard.money.v1.Money
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_ibctl_data_v1_imported_transaction_proto_init() }
