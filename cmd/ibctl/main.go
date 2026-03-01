@@ -12,7 +12,7 @@ import (
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/config"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/data"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/download"
-	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/holdings"
+	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/holding"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/probe"
 )
 
@@ -37,7 +37,7 @@ Run "ibctl config init" to create a new ibctl directory.`,
 			config.NewCommand("config", builder),
 			data.NewCommand("data", builder),
 			download.NewCommand("download", builder),
-			holdings.NewCommand("holdings", builder),
+			holding.NewCommand("holding", builder),
 			probe.NewCommand("probe", builder),
 		},
 	}

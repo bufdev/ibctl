@@ -2,8 +2,8 @@
 //
 // All rights reserved.
 
-// Package holdingsoverview implements the "holdings overview" command.
-package holdingsoverview
+// Package holdinglist implements the "holding list" command.
+package holdinglist
 
 import (
 	"context"
@@ -34,7 +34,7 @@ func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 	flags := newFlags()
 	return &appcmd.Command{
 		Use:   name,
-		Short: "Display holdings with prices, positions, and classifications",
+		Short: "List holdings with prices, positions, and classifications",
 		Args:  appcmd.NoArgs,
 		Run: builder.NewRunFunc(
 			func(ctx context.Context, container appext.Container) error {

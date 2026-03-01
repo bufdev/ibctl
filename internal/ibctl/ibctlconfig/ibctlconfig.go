@@ -14,6 +14,7 @@ import (
 	"regexp"
 
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlpath"
+	"github.com/bufdev/ibctl/internal/pkg/mathpb"
 	"gopkg.in/yaml.v3"
 )
 
@@ -63,6 +64,9 @@ type ExternalConfigV1 struct {
 	Accounts map[string]string `yaml:"accounts"`
 	// Symbols is the optional list of symbol classifications.
 	Symbols []ExternalSymbolConfigV1 `yaml:"symbols"`
+	// Adjustments maps currency codes to manual cash adjustments (positive or negative).
+	// Applied to cash positions in the holdings display.
+	Adjustments map[string]string `yaml:"adjustments"`
 }
 
 // ExternalSymbolConfigV1 holds classification metadata for a symbol in v1 config.
@@ -92,6 +96,9 @@ type Config struct {
 	AccountIDToAlias map[string]string
 	// SymbolConfigs maps ticker symbols to their classification metadata.
 	SymbolConfigs map[string]SymbolConfig
+	// CashAdjustments maps currency codes to manual cash adjustments in micros.
+	// Applied to cash positions in the holdings display.
+	CashAdjustments map[string]int64
 }
 
 // SymbolConfig holds classification metadata for a symbol.
@@ -150,12 +157,22 @@ func NewConfigV1(externalConfig ExternalConfigV1, dirPath string) (*Config, erro
 			Geo:      s.Geo,
 		}
 	}
+	// Parse cash adjustments, validating currency codes and decimal values.
+	cashAdjustments := make(map[string]int64, len(externalConfig.Adjustments))
+	for currency, value := range externalConfig.Adjustments {
+		units, micros, err := mathpb.ParseToUnitsMicros(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid adjustment for %s: %w", currency, err)
+		}
+		cashAdjustments[currency] = units*1_000_000 + micros
+	}
 	return &Config{
 		DirPath:          dirPath,
 		IBKRFlexQueryID:  externalConfig.FlexQueryID,
 		AccountAliases:   accountAliases,
 		AccountIDToAlias: accountIDToAlias,
 		SymbolConfigs:    symbolConfigs,
+		CashAdjustments:  cashAdjustments,
 	}, nil
 }
 

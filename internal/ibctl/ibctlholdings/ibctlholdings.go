@@ -10,6 +10,7 @@
 package ibctlholdings
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlfxrates"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctltaxlot"
+	"github.com/bufdev/ibctl/internal/pkg/cliio"
 	"github.com/bufdev/ibctl/internal/pkg/mathpb"
 	"github.com/bufdev/ibctl/internal/pkg/moneypb"
 	"github.com/bufdev/ibctl/internal/standard/xtime"
@@ -25,6 +27,10 @@ import (
 
 // assetCategoryCash is the IBKR asset category for cash/FX positions.
 const assetCategoryCash = "CASH"
+
+// assetCategoryBond is the IBKR asset category for bond positions.
+// Bond prices are percentages of par, so market value and P&L are divided by 100.
+const assetCategoryBond = "BOND"
 
 // HoldingsResult contains the holdings overview along with any data
 // inconsistencies detected during computation.
@@ -106,12 +112,12 @@ func HoldingOverviewToTableRow(h *HoldingOverview) []string {
 		h.Currency,
 		h.LastPrice,
 		h.AveragePrice,
-		formatUSD(h.LastPriceUSD),
-		formatUSD(h.AveragePriceUSD),
-		formatUSD(h.MarketValueUSD),
-		formatUSD(h.UnrealizedPnLUSD),
-		formatUSD(h.STCGUSD),
-		formatUSD(h.LTCGUSD),
+		cliio.FormatUSD(h.LastPriceUSD),
+		cliio.FormatUSD(h.AveragePriceUSD),
+		cliio.FormatUSD(h.MarketValueUSD),
+		cliio.FormatUSD(h.UnrealizedPnLUSD),
+		cliio.FormatUSD(h.STCGUSD),
+		cliio.FormatUSD(h.LTCGUSD),
 		mathpb.ToString(h.Position),
 		h.Category,
 		h.Type,
@@ -137,17 +143,187 @@ type Totals struct {
 func ComputeTotals(holdings []*HoldingOverview) *Totals {
 	var totalMktValMicros, totalPnLMicros, totalSTCGMicros, totalLTCGMicros int64
 	for _, h := range holdings {
-		totalMktValMicros += parseMicros(h.MarketValueUSD)
-		totalPnLMicros += parseMicros(h.UnrealizedPnLUSD)
-		totalSTCGMicros += parseMicros(h.STCGUSD)
-		totalLTCGMicros += parseMicros(h.LTCGUSD)
+		totalMktValMicros += mathpb.ParseMicros(h.MarketValueUSD)
+		totalPnLMicros += mathpb.ParseMicros(h.UnrealizedPnLUSD)
+		totalSTCGMicros += mathpb.ParseMicros(h.STCGUSD)
+		totalLTCGMicros += mathpb.ParseMicros(h.LTCGUSD)
 	}
 	return &Totals{
-		MarketValueUSD:   formatUSDMicros(totalMktValMicros),
-		UnrealizedPnLUSD: formatUSDMicros(totalPnLMicros),
-		STCGUSD:          formatUSDMicros(totalSTCGMicros),
-		LTCGUSD:          formatUSDMicros(totalLTCGMicros),
+		MarketValueUSD:   cliio.FormatUSDMicros(totalMktValMicros),
+		UnrealizedPnLUSD: cliio.FormatUSDMicros(totalPnLMicros),
+		STCGUSD:          cliio.FormatUSDMicros(totalSTCGMicros),
+		LTCGUSD:          cliio.FormatUSDMicros(totalLTCGMicros),
 	}
+}
+
+// LotListResult contains the lot list output for a single symbol.
+type LotListResult struct {
+	// Lots is the list of individual tax lots for display.
+	Lots []*LotOverview
+}
+
+// LotOverview represents a single tax lot for display.
+type LotOverview struct {
+	// Account is the account alias.
+	Account string `json:"account"`
+	// Date is the lot open date (YYYY-MM-DD).
+	Date string `json:"date"`
+	// Quantity is the remaining quantity in this lot.
+	Quantity *mathv1.Decimal `json:"quantity"`
+	// Currency is the native currency code.
+	Currency string `json:"currency"`
+	// AveragePrice is the cost basis price per share in native currency.
+	AveragePrice string `json:"average_price"`
+	// PnL is the unrealized P&L in native currency.
+	PnL string `json:"pnl"`
+	// Value is the current market value in native currency.
+	Value string `json:"value"`
+	// AverageUSD is the cost basis price in USD.
+	AverageUSD string `json:"average_usd"`
+	// PnLUSD is the unrealized P&L in USD.
+	PnLUSD string `json:"pnl_usd"`
+	// ValueUSD is the current market value in USD.
+	ValueUSD string `json:"value_usd"`
+}
+
+// LotListHeaders returns the column headers for lot list table/CSV output.
+func LotListHeaders() []string {
+	return []string{"ACCOUNT", "DATE", "QUANTITY", "CURRENCY", "AVG PRICE", "P&L", "VALUE", "AVG USD", "P&L USD", "VALUE USD"}
+}
+
+// LotOverviewToRow converts a LotOverview to a string slice for CSV output.
+func LotOverviewToRow(l *LotOverview) []string {
+	return []string{
+		l.Account,
+		l.Date,
+		mathpb.ToString(l.Quantity),
+		l.Currency,
+		l.AveragePrice,
+		l.PnL,
+		l.Value,
+		l.AverageUSD,
+		l.PnLUSD,
+		l.ValueUSD,
+	}
+}
+
+// LotOverviewToTableRow converts a LotOverview to a string slice for table display.
+// USD columns are formatted with $ prefix, comma separators, rounded to cents.
+func LotOverviewToTableRow(l *LotOverview) []string {
+	return []string{
+		l.Account,
+		l.Date,
+		mathpb.ToString(l.Quantity),
+		l.Currency,
+		l.AveragePrice,
+		l.PnL,
+		l.Value,
+		cliio.FormatUSD(l.AverageUSD),
+		cliio.FormatUSD(l.PnLUSD),
+		cliio.FormatUSD(l.ValueUSD),
+	}
+}
+
+// ComputeLotTotals sums the P&L USD and VALUE USD across all lots.
+// Returns formatted USD strings for the totals row.
+func ComputeLotTotals(lots []*LotOverview) (string, string) {
+	var totalPnLMicros, totalValueMicros int64
+	totalPnLMicros += mathpb.ParseMicros("0")
+	for _, l := range lots {
+		totalPnLMicros += mathpb.ParseMicros(l.PnLUSD)
+		totalValueMicros += mathpb.ParseMicros(l.ValueUSD)
+	}
+	return cliio.FormatUSDMicros(totalPnLMicros), cliio.FormatUSDMicros(totalValueMicros)
+}
+
+// GetLotList returns the individual tax lots for a given symbol.
+func GetLotList(
+	symbol string,
+	trades []*datav1.Trade,
+	positions []*datav1.Position,
+	fxStore *ibctlfxrates.Store,
+) (*LotListResult, error) {
+	// Filter out CASH asset category trades.
+	var securityTrades []*datav1.Trade
+	for _, trade := range trades {
+		if trade.GetAssetCategory() == assetCategoryCash {
+			continue
+		}
+		securityTrades = append(securityTrades, trade)
+	}
+	// Compute FIFO tax lots from all security trades.
+	taxLotResult, err := ibctltaxlot.ComputeTaxLots(securityTrades)
+	if err != nil {
+		return nil, err
+	}
+	// Look up the last price from IBKR-reported positions for this symbol.
+	var lastPriceMoney *datav1.Position
+	for _, pos := range positions {
+		if pos.GetSymbol() == symbol {
+			lastPriceMoney = pos
+			break
+		}
+	}
+	// Determine if this is a bond (prices are percentages of par).
+	isBond := lastPriceMoney != nil && lastPriceMoney.GetAssetCategory() == assetCategoryBond
+	// Get the last price in micros for P&L/value computation.
+	var lastPriceMicros int64
+	if lastPriceMoney != nil {
+		lastPriceMicros = moneypb.MoneyToMicros(lastPriceMoney.GetMarketPrice())
+	}
+	// Filter lots by symbol and build the lot overview.
+	var lots []*LotOverview
+	for _, lot := range taxLotResult.TaxLots {
+		if lot.GetSymbol() != symbol {
+			continue
+		}
+		costMicros := moneypb.MoneyToMicros(lot.GetCostBasisPrice())
+		lotQtyMicros := mathpb.ToMicros(lot.GetQuantity())
+		lotQtyUnits := lotQtyMicros / 1_000_000
+		lotQtyRemainder := lotQtyMicros % 1_000_000
+		currency := lot.GetCurrencyCode()
+		// Compute per-lot value and P&L in native currency.
+		var valueMicros, pnlMicros int64
+		if lastPriceMicros != 0 {
+			valueMicros = lastPriceMicros*lotQtyUnits + lastPriceMicros*lotQtyRemainder/1_000_000
+			pnlPerUnit := lastPriceMicros - costMicros
+			pnlMicros = pnlPerUnit*lotQtyUnits + pnlPerUnit*lotQtyRemainder/1_000_000
+			if isBond {
+				valueMicros /= 100
+				pnlMicros /= 100
+			}
+		}
+		// Format the open date.
+		dateStr := ""
+		if d := lot.GetOpenDate(); d != nil {
+			dateStr = fmt.Sprintf("%04d-%02d-%02d", d.GetYear(), d.GetMonth(), d.GetDay())
+		}
+		l := &LotOverview{
+			Account:      lot.GetAccountId(),
+			Date:         dateStr,
+			Quantity:     lot.GetQuantity(),
+			Currency:     currency,
+			AveragePrice: moneypb.MoneyValueToString(lot.GetCostBasisPrice()),
+			PnL:          moneypb.MoneyValueToString(moneypb.MoneyFromMicros(currency, pnlMicros)),
+			Value:        moneypb.MoneyValueToString(moneypb.MoneyFromMicros(currency, valueMicros)),
+		}
+		// Convert to USD using FX rates.
+		if fxStore != nil {
+			if usdCost, ok := fxStore.ConvertToUSD(lot.GetCostBasisPrice()); ok {
+				l.AverageUSD = moneypb.MoneyValueToString(usdCost)
+			}
+			pnlNative := moneypb.MoneyFromMicros(currency, pnlMicros)
+			if usdPnL, ok := fxStore.ConvertToUSD(pnlNative); ok {
+				l.PnLUSD = moneypb.MoneyValueToString(usdPnL)
+			}
+			valueNative := moneypb.MoneyFromMicros(currency, valueMicros)
+			if usdValue, ok := fxStore.ConvertToUSD(valueNative); ok {
+				l.ValueUSD = moneypb.MoneyValueToString(usdValue)
+			}
+		}
+		lots = append(lots, l)
+	}
+	return &LotListResult{Lots: lots}, nil
 }
 
 // GetHoldingsOverview computes the holdings overview from trade data using FIFO,
@@ -267,7 +443,7 @@ func GetHoldingsOverview(
 			// Market value USD = last price USD * position.
 			// Bond prices are percentages of par, so divide by 100 for bonds.
 			// Divide quantity first to avoid int64 overflow with large bond face values.
-			isBond := priceData.money != nil && priceData.money.GetAssetCategory() == "BOND"
+			isBond := priceData.money != nil && priceData.money.GetAssetCategory() == assetCategoryBond
 			if lastPriceUSDMicros != 0 {
 				qtyRemainder := data.quantityMicros % 1_000_000
 				mktValMicros := lastPriceUSDMicros*qtyUnits + lastPriceUSDMicros*qtyRemainder/1_000_000
@@ -309,10 +485,10 @@ func GetHoldingsOverview(
 	isBondMap := make(map[string]bool, len(holdings))
 	for _, h := range holdings {
 		if h.LastPriceUSD != "" {
-			lastPriceUSDMap[h.Symbol] = parseMicros(h.LastPriceUSD)
+			lastPriceUSDMap[h.Symbol] = mathpb.ParseMicros(h.LastPriceUSD)
 		}
 		priceData := marketPrices[h.Symbol]
-		isBondMap[h.Symbol] = priceData.money != nil && priceData.money.GetAssetCategory() == "BOND"
+		isBondMap[h.Symbol] = priceData.money != nil && priceData.money.GetAssetCategory() == assetCategoryBond
 	}
 	// Accumulate STCG and LTCG per symbol from individual tax lots.
 	type gainSplit struct {
@@ -408,6 +584,37 @@ func GetHoldingsOverview(
 		holdings = append(holdings, holding)
 	}
 
+	// Append manual cash adjustment holdings from config.
+	for currency, adjustmentMicros := range config.CashAdjustments {
+		if adjustmentMicros == 0 {
+			continue
+		}
+		holding := &HoldingOverview{
+			Symbol:       currency + " ADJUSTMENT",
+			Currency:     currency,
+			LastPrice:    "1",
+			AveragePrice: "1",
+			Position:     mathpb.FromMicros(adjustmentMicros),
+			Category:     assetCategoryCash,
+		}
+		// Convert to USD using FX rates.
+		if fxStore != nil {
+			balanceMoney := moneypb.MoneyFromMicros(currency, adjustmentMicros)
+			if usdMoney, ok := fxStore.ConvertToUSD(balanceMoney); ok {
+				rateMoney := moneypb.MoneyFromMicros(currency, 1_000_000)
+				if usdRateMoney, ok := fxStore.ConvertToUSD(rateMoney); ok {
+					holding.LastPriceUSD = moneypb.MoneyValueToString(usdRateMoney)
+					holding.AveragePriceUSD = moneypb.MoneyValueToString(usdRateMoney)
+				}
+				holding.MarketValueUSD = moneypb.MoneyValueToString(usdMoney)
+			}
+			holding.UnrealizedPnLUSD = "0"
+			holding.STCGUSD = "0"
+			holding.LTCGUSD = "0"
+		}
+		holdings = append(holdings, holding)
+	}
+
 	// Sort by category (cash last) then symbol for deterministic output.
 	sort.Slice(holdings, func(i, j int) bool {
 		// Cash positions sort after all other categories.
@@ -423,42 +630,4 @@ func GetHoldingsOverview(
 		UnmatchedSells:        taxLotResult.UnmatchedSells,
 		PositionDiscrepancies: discrepancies,
 	}, nil
-}
-
-// *** PRIVATE ***
-
-// formatUSD formats a raw decimal string as a USD value with $ prefix,
-// rounded to cents with comma separators (e.g., "$1,234.56", "-$789.01").
-// Returns empty string for empty input.
-func formatUSD(value string) string {
-	if value == "" {
-		return ""
-	}
-	decimal, err := mathpb.NewDecimal(value)
-	if err != nil {
-		return value
-	}
-	formatted := mathpb.Format(decimal, 2)
-	// Prepend $ after any negative sign.
-	if len(formatted) > 0 && formatted[0] == '-' {
-		return "-$" + formatted[1:]
-	}
-	return "$" + formatted
-}
-
-// formatUSDMicros formats a micros value as a USD string with $ prefix.
-func formatUSDMicros(micros int64) string {
-	return formatUSD(moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", micros)))
-}
-
-// parseMicros parses a decimal string to total micros. Returns 0 on error or empty input.
-func parseMicros(value string) int64 {
-	if value == "" {
-		return 0
-	}
-	units, micros, err := mathpb.ParseToUnitsMicros(value)
-	if err != nil {
-		return 0
-	}
-	return units*1_000_000 + micros
 }

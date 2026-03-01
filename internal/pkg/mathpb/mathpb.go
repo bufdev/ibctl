@@ -129,6 +129,18 @@ func addCommas(n int64) string {
 	return b.String()
 }
 
+// ParseMicros parses a decimal string to total micros. Returns 0 for empty or invalid input.
+func ParseMicros(value string) int64 {
+	if value == "" {
+		return 0
+	}
+	units, micros, err := ParseToUnitsMicros(value)
+	if err != nil {
+		return 0
+	}
+	return units*microsFactor + micros
+}
+
 // ParseToUnitsMicros parses a decimal string (e.g., "123.456789") into units and micros.
 func ParseToUnitsMicros(value string) (int64, int64, error) {
 	if value == "" {

@@ -12,6 +12,9 @@ import (
 	"io"
 	"strings"
 	"text/tabwriter"
+
+	"github.com/bufdev/ibctl/internal/pkg/mathpb"
+	"github.com/bufdev/ibctl/internal/pkg/moneypb"
 )
 
 // Format represents the output format for CLI commands.
@@ -90,6 +93,30 @@ func WriteCSVRecords(writer io.Writer, records [][]string) error {
 	}
 	csvWriter.Flush()
 	return nil
+}
+
+// FormatUSD formats a raw decimal string as a USD value with $ prefix,
+// rounded to cents with comma separators (e.g., "$1,234.56", "-$789.01").
+// Returns empty string for empty input.
+func FormatUSD(value string) string {
+	if value == "" {
+		return ""
+	}
+	decimal, err := mathpb.NewDecimal(value)
+	if err != nil {
+		return value
+	}
+	formatted := mathpb.Format(decimal, 2)
+	// Prepend $ after any negative sign.
+	if len(formatted) > 0 && formatted[0] == '-' {
+		return "-$" + formatted[1:]
+	}
+	return "$" + formatted
+}
+
+// FormatUSDMicros formats a micros value as a USD string with $ prefix.
+func FormatUSDMicros(micros int64) string {
+	return FormatUSD(moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", micros)))
 }
 
 // WriteJSON writes objects as JSON with newlines between each object.

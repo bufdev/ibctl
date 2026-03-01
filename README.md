@@ -23,7 +23,7 @@ ibctl config edit
 export IBKR_FLEX_WEB_SERVICE_TOKEN="your-flex-web-service-token"
 
 # View holdings (downloads data automatically).
-ibctl holdings overview
+ibctl holding list
 ```
 
 ## Directory Structure
@@ -132,11 +132,11 @@ symbols:
 # Set the IBKR token.
 export IBKR_FLEX_WEB_SERVICE_TOKEN="your-flex-web-service-token"
 
-# View combined holdings overview (downloads data automatically).
-ibctl holdings overview
-ibctl holdings overview --format csv
-ibctl holdings overview --format json
-ibctl holdings overview --cached    # Skip download, use cached data only
+# View combined holding list (downloads data automatically).
+ibctl holding list
+ibctl holding list --format csv
+ibctl holding list --format json
+ibctl holding list --cached    # Skip download, use cached data only
 
 # Force re-download of IBKR data (all accounts).
 ibctl download
@@ -148,7 +148,7 @@ ibctl probe
 ibctl data zip -o backup.zip
 
 # Use a different ibctl directory (default is current directory).
-ibctl holdings overview --dir ~/Documents/ibkr
+ibctl holding list --dir ~/Documents/ibkr
 ```
 
 ## Commands
@@ -160,7 +160,7 @@ ibctl holdings overview --dir ~/Documents/ibkr
 | `ibctl config validate` | Validate ibctl.yaml |
 | `ibctl data zip -o <file>` | Archive the ibctl directory to a zip file |
 | `ibctl download` | Download and cache IBKR data via Flex Query API |
-| `ibctl holdings overview` | Display holdings with prices, positions, and classifications |
+| `ibctl holding list` | Display holdings with prices, positions, and classifications |
 | `ibctl probe` | Probe the API and show per-account data counts |
 
 All commands accept `--dir` to specify the ibctl directory (defaults to `.`).
@@ -188,7 +188,7 @@ IBKR limits all data access to 365 days per request. To get your full trade hist
 
 6. Save each CSV in the account's subdirectory. Filenames don't matter — ibctl reads all `*.csv` files recursively.
 
-7. Run `ibctl holdings overview` — data from the CSVs is merged with Flex Query API data.
+7. Run `ibctl holding list` — data from the CSVs is merged with Flex Query API data.
 
 ### How Merging Works
 
@@ -220,7 +220,7 @@ The optional `seed/` directory contains permanent, manually curated transaction 
 
 ### Data Pipeline
 
-The `holdings overview` command runs:
+The `holding list` command runs:
 
 1. **Download**: Fetches all accounts' data from the IBKR Flex Query API. Trades are incrementally merged. FX rates are eagerly downloaded for all currency pairs from the earliest trade date to today.
 2. **Merge**: Combines Activity Statement CSVs + seed data + Flex Query cache, with CSV data taking precedence for overlapping dates.
