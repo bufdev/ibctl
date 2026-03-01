@@ -5,6 +5,10 @@
 // Package ibctlmerge merges trade data from Activity Statement CSVs (seed data)
 // and the Flex Query cache (supplement) into a unified view for commands to use.
 // Data is organized per account using account aliases.
+//
+// For overlapping date ranges, CSV data takes precedence because the Flex Query
+// API consolidates order executions differently than Activity Statements. Flex
+// Query trades are only used for dates not covered by CSVs.
 package ibctlmerge
 
 import (
@@ -38,98 +42,133 @@ type MergedData struct {
 }
 
 // Merge reads Activity Statement CSVs and Flex Query cached data for all accounts,
-// deduplicates trades, and returns the merged result.
-// The dataDirV1Path is the versioned data directory containing per-account subdirectories.
-// The activityStatementsDirPath is the directory containing per-account CSV subdirectories.
-// The accountAliases map contains alias → account ID mappings from config.
+// merges them, and returns the result.
+//
+// For each account, CSV trades are loaded first to determine which dates they cover.
+// Flex Query trades are then loaded only for dates NOT covered by the CSV data, since
+// the two sources represent the same trades at different granularities (the Flex Query
+// splits order executions while Activity Statements consolidate them).
 func Merge(
 	dataDirV1Path string,
 	activityStatementsDirPath string,
 	accountAliases map[string]string,
 ) (*MergedData, error) {
-	tradeMap := make(map[string]*datav1.Trade)
+	var allTrades []*datav1.Trade
 	var allPositions []*datav1.Position
 	var allTransfers []*datav1.Transfer
 	var allTradeTransfers []*datav1.TradeTransfer
 	var allCorporateActions []*datav1.CorporateAction
-	// Process each account: load Flex Query cache + Activity Statement CSVs.
+	// Process each account: load CSVs first, then supplement with Flex Query data.
 	for alias := range accountAliases {
-		// Load Flex Query cached data for this account.
+		// Step 1: Load Activity Statement CSV trades for this account.
+		// These are the primary source of truth.
+		var csvTrades []*datav1.Trade
+		csvDir := filepath.Join(activityStatementsDirPath, alias)
+		csvStatements, err := ibkractivitycsv.ParseDirectory(csvDir)
+		if err == nil {
+			for _, statement := range csvStatements {
+				for i := range statement.Trades {
+					trade, err := csvTradeToProto(&statement.Trades[i], alias)
+					if err != nil {
+						continue
+					}
+					csvTrades = append(csvTrades, trade)
+				}
+				// CSV positions for this account.
+				for i := range statement.Positions {
+					pos, err := csvPositionToProto(&statement.Positions[i], alias)
+					if err != nil {
+						continue
+					}
+					allPositions = append(allPositions, pos)
+				}
+			}
+		}
+		// Find the date range covered by CSV trades for this account.
+		// Flex Query trades within this range will be excluded.
+		csvMinDate, csvMaxDate := tradeDateRange(csvTrades)
+		allTrades = append(allTrades, csvTrades...)
+		// Step 2: Load Flex Query cached trades, excluding dates covered by CSVs.
 		accountDir := filepath.Join(dataDirV1Path, alias)
 		tradesPath := filepath.Join(accountDir, "trades.json")
 		cachedTrades, err := protoio.ReadMessagesJSON(tradesPath, func() *datav1.Trade { return &datav1.Trade{} })
 		if err == nil {
 			for _, trade := range cachedTrades {
-				tradeMap[tradeKey(trade)] = trade
+				// Skip Flex Query trades that fall within the CSV date range,
+				// since the CSV data covers those dates at the correct granularity.
+				if csvMinDate != "" && csvMaxDate != "" {
+					tradeDate := protoDateString(trade.GetTradeDate())
+					if tradeDate >= csvMinDate && tradeDate <= csvMaxDate {
+						continue
+					}
+				}
+				allTrades = append(allTrades, trade)
 			}
 		}
+		// Load Flex Query positions (used as fallback if no CSV positions exist).
 		positionsPath := filepath.Join(accountDir, "positions.json")
 		positions, err := protoio.ReadMessagesJSON(positionsPath, func() *datav1.Position { return &datav1.Position{} })
 		if err == nil {
 			allPositions = append(allPositions, positions...)
 		}
+		// Load transfers for this account.
 		transfersPath := filepath.Join(accountDir, "transfers.json")
 		transfers, err := protoio.ReadMessagesJSON(transfersPath, func() *datav1.Transfer { return &datav1.Transfer{} })
 		if err == nil {
 			allTransfers = append(allTransfers, transfers...)
 		}
+		// Load trade transfers for this account.
 		tradeTransfersPath := filepath.Join(accountDir, "trade_transfers.json")
 		tradeTransfers, err := protoio.ReadMessagesJSON(tradeTransfersPath, func() *datav1.TradeTransfer { return &datav1.TradeTransfer{} })
 		if err == nil {
 			allTradeTransfers = append(allTradeTransfers, tradeTransfers...)
 		}
+		// Load corporate actions for this account.
 		corporateActionsPath := filepath.Join(accountDir, "corporate_actions.json")
 		corporateActions, err := protoio.ReadMessagesJSON(corporateActionsPath, func() *datav1.CorporateAction { return &datav1.CorporateAction{} })
 		if err == nil {
 			allCorporateActions = append(allCorporateActions, corporateActions...)
 		}
-		// Load Activity Statement CSVs for this account from the matching subdirectory.
-		// CSV data takes precedence over Flex Query data.
-		csvDir := filepath.Join(activityStatementsDirPath, alias)
-		csvStatements, err := ibkractivitycsv.ParseDirectory(csvDir)
-		if err != nil {
-			// No CSV directory for this account — skip (not an error).
-			continue
-		}
-		for _, statement := range csvStatements {
-			for i := range statement.Trades {
-				trade, err := csvTradeToProto(&statement.Trades[i], alias)
-				if err != nil {
-					continue
-				}
-				// CSV trades overwrite Flex Query trades with the same key.
-				tradeMap[tradeKey(trade)] = trade
-			}
-			// CSV positions overwrite Flex Query positions for this account.
-			for i := range statement.Positions {
-				pos, err := csvPositionToProto(&statement.Positions[i], alias)
-				if err != nil {
-					continue
-				}
-				allPositions = append(allPositions, pos)
-			}
-		}
 	}
-	// Collect and sort trades for deterministic output.
-	trades := make([]*datav1.Trade, 0, len(tradeMap))
-	for _, trade := range tradeMap {
-		trades = append(trades, trade)
-	}
-	sort.Slice(trades, func(i, j int) bool {
-		dateI := protoDateString(trades[i].GetTradeDate())
-		dateJ := protoDateString(trades[j].GetTradeDate())
+	// Sort all trades by date for deterministic output.
+	sort.Slice(allTrades, func(i, j int) bool {
+		dateI := protoDateString(allTrades[i].GetTradeDate())
+		dateJ := protoDateString(allTrades[j].GetTradeDate())
 		if dateI != dateJ {
 			return dateI < dateJ
 		}
-		return trades[i].GetTradeId() < trades[j].GetTradeId()
+		// Within the same date, sort by account then symbol for stability.
+		if allTrades[i].GetAccountId() != allTrades[j].GetAccountId() {
+			return allTrades[i].GetAccountId() < allTrades[j].GetAccountId()
+		}
+		return allTrades[i].GetSymbol() < allTrades[j].GetSymbol()
 	})
 	return &MergedData{
-		Trades:           trades,
+		Trades:           allTrades,
 		Positions:        allPositions,
 		Transfers:        allTransfers,
 		TradeTransfers:   allTradeTransfers,
 		CorporateActions: allCorporateActions,
 	}, nil
+}
+
+// tradeDateRange returns the min and max trade dates as sortable strings.
+// Returns empty strings if there are no trades.
+func tradeDateRange(trades []*datav1.Trade) (string, string) {
+	var minDate, maxDate string
+	for _, trade := range trades {
+		dateStr := protoDateString(trade.GetTradeDate())
+		if dateStr == "" {
+			continue
+		}
+		if minDate == "" || dateStr < minDate {
+			minDate = dateStr
+		}
+		if maxDate == "" || dateStr > maxDate {
+			maxDate = dateStr
+		}
+	}
+	return minDate, maxDate
 }
 
 // csvTradeToProto converts an Activity Statement CSV trade to a proto Trade.
@@ -211,24 +250,6 @@ func csvPositionToProto(csvPosition *ibkractivitycsv.Position, accountAlias stri
 		MarketValue:    marketValue,
 		CurrencyCode:   currencyCode,
 	}, nil
-}
-
-// tradeKey generates a deterministic dedup key for a trade proto.
-// Always uses content-based key (account + symbol + date + quantity + price)
-// so that the same trade from different sources (Flex Query API vs Activity
-// Statement CSV) is recognized as the same trade and deduplicated.
-func tradeKey(trade *datav1.Trade) string {
-	accountPrefix := trade.GetAccountId()
-	if accountPrefix == "" {
-		accountPrefix = "unknown"
-	}
-	return fmt.Sprintf("%s-%s-%s-%s-%s",
-		accountPrefix,
-		trade.GetSymbol(),
-		protoDateString(trade.GetTradeDate()),
-		mathpb.ToString(trade.GetQuantity()),
-		moneypb.MoneyValueToString(trade.GetTradePrice()),
-	)
 }
 
 // generateTradeID creates a deterministic trade ID from trade fields.
