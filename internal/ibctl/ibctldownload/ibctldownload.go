@@ -21,6 +21,7 @@ import (
 
 	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
+	"github.com/bufdev/ibctl/internal/ibctl/ibctlpath"
 	"github.com/bufdev/ibctl/internal/pkg/bankofcanada"
 	"github.com/bufdev/ibctl/internal/pkg/frankfurter"
 	"github.com/bufdev/ibctl/internal/pkg/ibkractivitycsv"
@@ -42,11 +43,9 @@ type Downloader interface {
 
 // NewDownloader creates a new Downloader with all required dependencies.
 // The ibkrToken is the Flex Web Service token from the IBKR_FLEX_WEB_SERVICE_TOKEN environment variable.
-// The dataDirV1Path is the versioned data directory (e.g., <data_dir>/v1).
 func NewDownloader(
 	logger *slog.Logger,
 	ibkrToken string,
-	dataDirV1Path string,
 	config *ibctlconfig.Config,
 	flexQueryClient ibkrflexquery.Client,
 	fxRateClient frankfurter.Client,
@@ -55,7 +54,6 @@ func NewDownloader(
 	return &downloader{
 		logger:          logger,
 		ibkrToken:       ibkrToken,
-		dataDirV1Path:   dataDirV1Path,
 		config:          config,
 		flexQueryClient: flexQueryClient,
 		fxRateClient:    fxRateClient,
@@ -66,7 +64,6 @@ func NewDownloader(
 type downloader struct {
 	logger          *slog.Logger
 	ibkrToken       string
-	dataDirV1Path   string
 	config          *ibctlconfig.Config
 	flexQueryClient ibkrflexquery.Client
 	fxRateClient    frankfurter.Client
@@ -74,9 +71,17 @@ type downloader struct {
 }
 
 func (d *downloader) Download(ctx context.Context) error {
-	// Create the accounts directory for per-account cached data.
-	if err := os.MkdirAll(d.config.AccountsDirPath, 0o755); err != nil {
-		return fmt.Errorf("creating accounts directory: %w", err)
+	// Compute directory paths from config. Trades go to data_dir (persistent),
+	// everything else goes to cache_dir (blow-away safe).
+	dataAccountsDir := ibctlpath.DataAccountsDirPath(d.config.DataDirPath)
+	cacheAccountsDir := ibctlpath.CacheAccountsDirPath(d.config.CacheDirPath)
+	cacheFXDir := ibctlpath.CacheFXDirPath(d.config.CacheDirPath)
+	// Create the directory structure.
+	if err := os.MkdirAll(dataAccountsDir, 0o755); err != nil {
+		return fmt.Errorf("creating data accounts directory: %w", err)
+	}
+	if err := os.MkdirAll(cacheAccountsDir, 0o755); err != nil {
+		return fmt.Errorf("creating cache accounts directory: %w", err)
 	}
 	d.logger.Info("downloading flex query data")
 	// Fetch data using the query's configured period (single API call).
@@ -98,13 +103,17 @@ func (d *downloader) Download(ctx context.Context) error {
 			)
 			continue
 		}
-		// Create the per-account directory under accounts/.
-		accountDir := filepath.Join(d.config.AccountsDirPath, alias)
-		if err := os.MkdirAll(accountDir, 0o755); err != nil {
-			return fmt.Errorf("creating account directory for %s: %w", alias, err)
+		// Create per-account directories under both data and cache.
+		dataAccountDir := filepath.Join(dataAccountsDir, alias)
+		cacheAccountDir := filepath.Join(cacheAccountsDir, alias)
+		if err := os.MkdirAll(dataAccountDir, 0o755); err != nil {
+			return fmt.Errorf("creating data account directory for %s: %w", alias, err)
+		}
+		if err := os.MkdirAll(cacheAccountDir, 0o755); err != nil {
+			return fmt.Errorf("creating cache account directory for %s: %w", alias, err)
 		}
 		// Process and write account-specific data.
-		trades, err := d.processAccountData(alias, accountDir, &statement)
+		trades, err := d.processAccountData(alias, dataAccountDir, cacheAccountDir, &statement)
 		if err != nil {
 			return fmt.Errorf("processing account %s: %w", alias, err)
 		}
@@ -112,7 +121,7 @@ func (d *downloader) Download(ctx context.Context) error {
 	}
 	// Eagerly download FX rates for all non-USD currencies found in trades.
 	// Rates are stored per pair in fx/{BASE}.{QUOTE}/rates.json.
-	if err := d.downloadFXRates(ctx, allTrades); err != nil {
+	if err := d.downloadFXRates(ctx, cacheFXDir, allTrades); err != nil {
 		d.logger.Warn("failed to download FX rates", "error", err)
 	}
 	d.logger.Info("download complete")
@@ -120,24 +129,27 @@ func (d *downloader) Download(ctx context.Context) error {
 }
 
 // processAccountData converts XML data to protos, merges with existing cache,
-// and writes per-account data files. Returns the merged trades for FX rate processing.
-func (d *downloader) processAccountData(alias string, accountDir string, statement *ibkrflexquery.FlexStatement) ([]*datav1.Trade, error) {
-	// Convert and merge trades.
+// and writes per-account data files. Trades go to dataAccountDir (persistent),
+// all other snapshots go to cacheAccountDir (blow-away safe).
+// Returns the merged trades for FX rate processing.
+func (d *downloader) processAccountData(alias string, dataAccountDir string, cacheAccountDir string, statement *ibkrflexquery.FlexStatement) ([]*datav1.Trade, error) {
+	// Convert and merge trades — written to persistent data directory.
 	newTrades, err := d.convertTrades(statement.Trades, alias)
 	if err != nil {
 		return nil, err
 	}
-	trades := d.mergeTradesWithCache(newTrades, accountDir)
-	tradesPath := filepath.Join(accountDir, "trades.json")
+	trades := d.mergeTradesWithCache(newTrades, dataAccountDir)
+	tradesPath := filepath.Join(dataAccountDir, "trades.json")
 	if err := protoio.WriteMessagesJSON(tradesPath, trades); err != nil {
 		return nil, fmt.Errorf("writing trades: %w", err)
 	}
+	// All remaining data is snapshot-based and goes to cache directory.
 	// Positions are always overwritten with the latest snapshot.
 	positions, err := d.convertPositions(statement.OpenPositions, alias)
 	if err != nil {
 		return nil, err
 	}
-	positionsPath := filepath.Join(accountDir, "positions.json")
+	positionsPath := filepath.Join(cacheAccountDir, "positions.json")
 	if err := protoio.WriteMessagesJSON(positionsPath, positions); err != nil {
 		return nil, fmt.Errorf("writing positions: %w", err)
 	}
@@ -146,7 +158,7 @@ func (d *downloader) processAccountData(alias string, accountDir string, stateme
 	if err != nil {
 		return nil, err
 	}
-	transfersPath := filepath.Join(accountDir, "transfers.json")
+	transfersPath := filepath.Join(cacheAccountDir, "transfers.json")
 	if err := protoio.WriteMessagesJSON(transfersPath, transfers); err != nil {
 		return nil, fmt.Errorf("writing transfers: %w", err)
 	}
@@ -155,7 +167,7 @@ func (d *downloader) processAccountData(alias string, accountDir string, stateme
 	if err != nil {
 		return nil, err
 	}
-	tradeTransfersPath := filepath.Join(accountDir, "trade_transfers.json")
+	tradeTransfersPath := filepath.Join(cacheAccountDir, "trade_transfers.json")
 	if err := protoio.WriteMessagesJSON(tradeTransfersPath, tradeTransfers); err != nil {
 		return nil, fmt.Errorf("writing trade transfers: %w", err)
 	}
@@ -164,9 +176,15 @@ func (d *downloader) processAccountData(alias string, accountDir string, stateme
 	if err != nil {
 		return nil, err
 	}
-	corporateActionsPath := filepath.Join(accountDir, "corporate_actions.json")
+	corporateActionsPath := filepath.Join(cacheAccountDir, "corporate_actions.json")
 	if err := protoio.WriteMessagesJSON(corporateActionsPath, corporateActions); err != nil {
 		return nil, fmt.Errorf("writing corporate actions: %w", err)
+	}
+	// Convert and write cash positions from the Cash Report section.
+	cashPositions := d.convertCashPositions(statement.CashReport, alias)
+	cashPositionsPath := filepath.Join(cacheAccountDir, "cash_positions.json")
+	if err := protoio.WriteMessagesJSON(cashPositionsPath, cashPositions); err != nil {
+		return nil, fmt.Errorf("writing cash positions: %w", err)
 	}
 	d.logger.Info("account data written",
 		"account", alias,
@@ -175,6 +193,7 @@ func (d *downloader) processAccountData(alias string, accountDir string, stateme
 		"transfers", len(transfers),
 		"trade_transfers", len(tradeTransfers),
 		"corporate_actions", len(corporateActions),
+		"cash_positions", len(cashPositions),
 	)
 	return trades, nil
 }
@@ -234,8 +253,8 @@ func exchangeRateDateString(rate *datav1.ExchangeRate) string {
 // across all data sources (Flex Query trades, seed transactions, Activity
 // Statement CSVs). Rates are stored per pair in fx/{BASE}.{QUOTE}/rates.json.
 // Only fetches rates for dates not already cached.
-func (d *downloader) downloadFXRates(ctx context.Context, flexQueryTrades []*datav1.Trade) error {
-	if err := os.MkdirAll(d.config.FXDirPath, 0o755); err != nil {
+func (d *downloader) downloadFXRates(ctx context.Context, fxDirPath string, flexQueryTrades []*datav1.Trade) error {
+	if err := os.MkdirAll(fxDirPath, 0o755); err != nil {
 		return fmt.Errorf("creating fx directory: %w", err)
 	}
 	// Collect all non-USD currencies and date range across ALL data sources:
@@ -332,7 +351,7 @@ func (d *downloader) downloadFXRates(ctx context.Context, flexQueryTrades []*dat
 	pairs = append(pairs, pairSpec{base: "USD", quote: "CAD", provider: "bankofcanada"})
 	// Fetch and write rates for each pair.
 	for _, pair := range pairs {
-		if err := d.downloadPairRates(ctx, pair.base, pair.quote, pair.provider, earliestDate, latestDate); err != nil {
+		if err := d.downloadPairRates(ctx, fxDirPath, pair.base, pair.quote, pair.provider, earliestDate, latestDate); err != nil {
 			d.logger.Warn("failed to download FX rates for pair",
 				"pair", pair.base+"."+pair.quote,
 				"provider", pair.provider,
@@ -346,9 +365,9 @@ func (d *downloader) downloadFXRates(ctx context.Context, flexQueryTrades []*dat
 // downloadPairRates downloads FX rates for a single currency pair from the
 // specified provider, merges with existing cached rates, and writes the result.
 // Only dates not already in the cache are fetched.
-func (d *downloader) downloadPairRates(ctx context.Context, base string, quote string, provider string, startDate string, endDate string) error {
+func (d *downloader) downloadPairRates(ctx context.Context, fxDirPath string, base string, quote string, provider string, startDate string, endDate string) error {
 	pairKey := base + "." + quote
-	pairDir := filepath.Join(d.config.FXDirPath, pairKey)
+	pairDir := filepath.Join(fxDirPath, pairKey)
 	if err := os.MkdirAll(pairDir, 0o755); err != nil {
 		return fmt.Errorf("creating pair directory: %w", err)
 	}
@@ -532,6 +551,36 @@ func (d *downloader) convertCorporateActions(xmlActions []ibkrflexquery.XMLCorpo
 		actions = append(actions, action)
 	}
 	return actions, nil
+}
+
+// convertCashPositions converts XML cash report entries to CashPosition protos.
+// Filters out zero-balance currencies and the BASE_SUMMARY row.
+func (d *downloader) convertCashPositions(xmlCashReport []ibkrflexquery.XMLCashReportCurrency, accountAlias string) []*datav1.CashPosition {
+	var cashPositions []*datav1.CashPosition
+	for _, cr := range xmlCashReport {
+		// Skip the BASE_SUMMARY aggregate row.
+		if cr.Currency == "BASE_SUMMARY" {
+			continue
+		}
+		// Use EndingCash as the balance (includes unsettled trades to match IBKR portal).
+		if cr.EndingCash == "" || cr.EndingCash == "0" {
+			continue
+		}
+		balance, err := moneypb.NewProtoMoney(cr.Currency, cr.EndingCash)
+		if err != nil {
+			d.logger.Warn("skipping unparseable cash position", "currency", cr.Currency, "error", err)
+			continue
+		}
+		// Skip zero balances after parsing.
+		if moneypb.MoneyToMicros(balance) == 0 {
+			continue
+		}
+		cashPositions = append(cashPositions, &datav1.CashPosition{
+			AccountId: accountAlias,
+			Balance:   balance,
+		})
+	}
+	return cashPositions
 }
 
 // xmlTradeToProto converts an XML trade from the Flex Query response to a proto Trade.

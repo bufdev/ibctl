@@ -23,6 +23,9 @@ import (
 	"github.com/bufdev/ibctl/internal/standard/xtime"
 )
 
+// assetCategoryCash is the IBKR asset category for cash/FX positions.
+const assetCategoryCash = "CASH"
+
 // HoldingsResult contains the holdings overview along with any data
 // inconsistencies detected during computation.
 type HoldingsResult struct {
@@ -154,6 +157,7 @@ func ComputeTotals(holdings []*HoldingOverview) *Totals {
 func GetHoldingsOverview(
 	trades []*datav1.Trade,
 	positions []*datav1.Position,
+	cashPositions []*datav1.CashPosition,
 	config *ibctlconfig.Config,
 	fxStore *ibctlfxrates.Store,
 ) (*HoldingsResult, error) {
@@ -161,7 +165,7 @@ func GetHoldingsOverview(
 	// These are currency exchanges, not security trades.
 	var securityTrades []*datav1.Trade
 	for _, trade := range trades {
-		if trade.GetAssetCategory() == "CASH" {
+		if trade.GetAssetCategory() == assetCategoryCash {
 			continue
 		}
 		securityTrades = append(securityTrades, trade)
@@ -176,7 +180,7 @@ func GetHoldingsOverview(
 	// Filter out CASH positions from IBKR-reported data before verification.
 	var securityPositions []*datav1.Position
 	for _, pos := range positions {
-		if pos.GetAssetCategory() == "CASH" {
+		if pos.GetAssetCategory() == assetCategoryCash {
 			continue
 		}
 		securityPositions = append(securityPositions, pos)
@@ -364,8 +368,54 @@ func GetHoldingsOverview(
 		h.LTCGUSD = moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", gs.ltcgMicros))
 	}
 
-	// Sort by symbol for deterministic output.
+	// Append cash positions aggregated by currency across accounts.
+	cashByCurrency := make(map[string]int64)
+	for _, cp := range cashPositions {
+		currency := cp.GetBalance().GetCurrencyCode()
+		cashByCurrency[currency] += moneypb.MoneyToMicros(cp.GetBalance())
+	}
+	for currency, amountMicros := range cashByCurrency {
+		if amountMicros == 0 {
+			continue
+		}
+		holding := &HoldingOverview{
+			Symbol:   currency,
+			Currency: currency,
+			// Cash has no market price or cost basis — display "1" as price per unit.
+			LastPrice:    "1",
+			AveragePrice: "1",
+			Position:     mathpb.FromMicros(amountMicros),
+			Category:     assetCategoryCash,
+		}
+		// Convert to USD using FX rates.
+		if fxStore != nil {
+			balanceMoney := moneypb.MoneyFromMicros(currency, amountMicros)
+			if usdMoney, ok := fxStore.ConvertToUSD(balanceMoney); ok {
+				usdRate := moneypb.MoneyValueToString(usdMoney)
+				// For cash, LastPriceUSD and AvgPriceUSD are the FX rate itself.
+				rateMoney := moneypb.MoneyFromMicros(currency, 1_000_000)
+				if usdRateMoney, ok := fxStore.ConvertToUSD(rateMoney); ok {
+					holding.LastPriceUSD = moneypb.MoneyValueToString(usdRateMoney)
+					holding.AveragePriceUSD = moneypb.MoneyValueToString(usdRateMoney)
+				}
+				holding.MarketValueUSD = usdRate
+			}
+			// Cash has no unrealized P&L or capital gains.
+			holding.UnrealizedPnLUSD = "0"
+			holding.STCGUSD = "0"
+			holding.LTCGUSD = "0"
+		}
+		holdings = append(holdings, holding)
+	}
+
+	// Sort by category (cash last) then symbol for deterministic output.
 	sort.Slice(holdings, func(i, j int) bool {
+		// Cash positions sort after all other categories.
+		iCash := holdings[i].Category == assetCategoryCash
+		jCash := holdings[j].Category == assetCategoryCash
+		if iCash != jCash {
+			return !iCash
+		}
 		return holdings[i].Symbol < holdings[j].Symbol
 	})
 	return &HoldingsResult{

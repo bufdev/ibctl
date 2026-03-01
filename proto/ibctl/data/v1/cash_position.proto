@@ -1,0 +1,19 @@
+// Copyright 2026 Peter Edge
+//
+// All rights reserved.
+
+syntax = "proto3";
+
+package ibctl.data.v1;
+
+import "buf/validate/validate.proto";
+import "standard/money/v1/money.proto";
+
+// CashPosition represents a cash balance in a single currency for an account.
+// Downloaded from the IBKR Flex Query Cash Report section.
+message CashPosition {
+  // The account alias this cash balance belongs to (e.g., "individual").
+  string account_id = 1 [(buf.validate.field).required = true];
+  // The cash balance as a Money value (currency code + amount).
+  standard.money.v1.Money balance = 2 [(buf.validate.field).required = true];
+}

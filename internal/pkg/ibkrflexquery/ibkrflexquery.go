@@ -87,6 +87,8 @@ type FlexStatement struct {
 	TradeTransfers []XMLTradeTransfer `xml:"TradeTransfers>TradeTransfer"`
 	// CorporateActions is the list of corporate action events.
 	CorporateActions []XMLCorporateAction `xml:"CorporateActions>CorporateAction"`
+	// CashReport is the cash balance report by currency.
+	CashReport []XMLCashReportCurrency `xml:"CashReport>CashReportCurrency"`
 }
 
 // XMLTrade represents a trade in the IBKR Flex Query XML format.
@@ -173,6 +175,17 @@ type XMLCorporateAction struct {
 	Currency          string `xml:"currency,attr"`
 	ActionDescription string `xml:"actionDescription,attr"`
 	AssetCategory     string `xml:"assetCategory,attr"`
+}
+
+// XMLCashReportCurrency represents a cash balance for a single currency
+// from the IBKR Flex Query Cash Report section.
+type XMLCashReportCurrency struct {
+	// Currency is the ISO currency code (e.g., "USD", "CAD").
+	Currency string `xml:"currency,attr"`
+	// EndingCash is the total cash balance including unsettled trades.
+	EndingCash string `xml:"endingCash,attr"`
+	// EndingSettledCash is the settled cash balance (actual available funds).
+	EndingSettledCash string `xml:"endingSettledCash,attr"`
 }
 
 // *** PRIVATE ***

@@ -16,6 +16,7 @@ import (
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlfxrates"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlholdings"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlmerge"
+	"github.com/bufdev/ibctl/internal/ibctl/ibctlpath"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctltaxlot"
 	"github.com/bufdev/ibctl/internal/pkg/cliio"
 	"github.com/bufdev/ibctl/internal/pkg/mathpb"
@@ -85,15 +86,21 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 		}
 	}
 	// Merge seed lots + Activity Statement CSVs + Flex Query cached data across all accounts.
-	// Use AccountsDirPath for per-account cached data.
-	mergedData, err := ibctlmerge.Merge(config.AccountsDirPath, config.ActivityStatementsDirPath, config.SeedDirPath, config.AccountAliases)
+	// Trades come from data_dir (persistent), snapshots from cache_dir (blow-away safe).
+	mergedData, err := ibctlmerge.Merge(
+		ibctlpath.DataAccountsDirPath(config.DataDirPath),
+		ibctlpath.CacheAccountsDirPath(config.CacheDirPath),
+		config.ActivityStatementsDirPath,
+		config.SeedDirPath,
+		config.AccountAliases,
+	)
 	if err != nil {
 		return err
 	}
 	// Load FX rates for USD price conversion. Returns an empty store if no data available.
-	fxStore := ibctlfxrates.NewStore(config.FXDirPath)
+	fxStore := ibctlfxrates.NewStore(ibctlpath.CacheFXDirPath(config.CacheDirPath))
 	// Compute holdings via FIFO from all trade data, verified against IBKR positions.
-	result, err := ibctlholdings.GetHoldingsOverview(mergedData.Trades, mergedData.Positions, config, fxStore)
+	result, err := ibctlholdings.GetHoldingsOverview(mergedData.Trades, mergedData.Positions, mergedData.CashPositions, config, fxStore)
 	if err != nil {
 		return err
 	}
@@ -114,9 +121,23 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	switch format {
 	case cliio.FormatTable:
 		headers := ibctlholdings.HoldingsOverviewHeaders()
-		rows := make([][]string, 0, len(result.Holdings))
+		// Split holdings into securities and cash for separate display sections.
+		var securityRows, cashRows [][]string
 		for _, h := range result.Holdings {
-			rows = append(rows, ibctlholdings.HoldingOverviewToTableRow(h))
+			row := ibctlholdings.HoldingOverviewToTableRow(h)
+			if h.Category == "CASH" {
+				cashRows = append(cashRows, row)
+			} else {
+				securityRows = append(securityRows, row)
+			}
+		}
+		// Build the row sections: securities, then cash, then totals.
+		var sections [][]string
+		sections = append(sections, securityRows...)
+		if len(cashRows) > 0 {
+			// Blank separator row between securities and cash.
+			sections = append(sections, make([]string, len(headers)))
+			sections = append(sections, cashRows...)
 		}
 		// Build the totals row aligned to the same columns as the data.
 		totals := ibctlholdings.ComputeTotals(result.Holdings)
@@ -126,7 +147,7 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 		totalsRow[7] = totals.UnrealizedPnLUSD
 		totalsRow[8] = totals.STCGUSD
 		totalsRow[9] = totals.LTCGUSD
-		return cliio.WriteTableWithTotals(writer, headers, rows, totalsRow)
+		return cliio.WriteTableWithTotals(writer, headers, sections, totalsRow)
 	case cliio.FormatCSV:
 		headers := ibctlholdings.HoldingsOverviewHeaders()
 		records := make([][]string, 0, len(result.Holdings)+1)

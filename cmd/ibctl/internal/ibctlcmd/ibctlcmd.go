@@ -36,13 +36,11 @@ func NewDownloader(container appext.Container, configFilePath string) (ibctldown
 	if ibkrToken == "" {
 		return nil, errors.New(ibkrFlexWebServiceTokenEnvVar + " environment variable is required, set it to your IBKR Flex Web Service token (see \"ibctl --help\" for details)")
 	}
-	// Use the data directory from config.
-	dataDirV1Path := config.DataDirV1Path
 	// Extract the logger from the appext container.
 	logger := container.Logger()
 	// Construct the API clients.
 	flexQueryClient := ibkrflexquery.NewClient(logger)
 	fxRateClient := frankfurter.NewClient()
 	bocClient := bankofcanada.NewClient()
-	return ibctldownload.NewDownloader(logger, ibkrToken, dataDirV1Path, config, flexQueryClient, fxRateClient, bocClient), nil
+	return ibctldownload.NewDownloader(logger, ibkrToken, config, flexQueryClient, fxRateClient, bocClient), nil
 }

@@ -39,6 +39,8 @@ type MergedData struct {
 	TradeTransfers []*datav1.TradeTransfer
 	// CorporateActions is the list of corporate action events across all accounts.
 	CorporateActions []*datav1.CorporateAction
+	// CashPositions is the list of cash balances by currency across all accounts.
+	CashPositions []*datav1.CashPosition
 }
 
 // Merge reads Activity Statement CSVs and Flex Query cached data for all accounts,
@@ -49,7 +51,8 @@ type MergedData struct {
 // the two sources represent the same trades at different granularities (the Flex Query
 // splits order executions while Activity Statements consolidate them).
 func Merge(
-	dataDirV1Path string,
+	dataAccountsDirPath string,
+	cacheAccountsDirPath string,
 	activityStatementsDirPath string,
 	seedDirPath string,
 	accountAliases map[string]string,
@@ -59,6 +62,7 @@ func Merge(
 	var allTransfers []*datav1.Transfer
 	var allTradeTransfers []*datav1.TradeTransfer
 	var allCorporateActions []*datav1.CorporateAction
+	var allCashPositions []*datav1.CashPosition
 	// Process each account: load CSVs first, then supplement with Flex Query data.
 	for alias := range accountAliases {
 		// Step 1: Load Activity Statement CSV trades for this account.
@@ -102,8 +106,8 @@ func Merge(
 			}
 		}
 		// Step 3: Load Flex Query cached trades, excluding dates covered by CSVs.
-		accountDir := filepath.Join(dataDirV1Path, alias)
-		tradesPath := filepath.Join(accountDir, "trades.json")
+		dataAccountDir := filepath.Join(dataAccountsDirPath, alias)
+		tradesPath := filepath.Join(dataAccountDir, "trades.json")
 		cachedTrades, err := protoio.ReadMessagesJSON(tradesPath, func() *datav1.Trade { return &datav1.Trade{} })
 		if err == nil {
 			for _, trade := range cachedTrades {
@@ -118,29 +122,37 @@ func Merge(
 				allTrades = append(allTrades, trade)
 			}
 		}
-		// Load Flex Query positions (used as fallback if no CSV positions exist).
-		positionsPath := filepath.Join(accountDir, "positions.json")
+		// Load snapshot data from the cache directory.
+		cacheAccountDir := filepath.Join(cacheAccountsDirPath, alias)
+		// Load Flex Query positions (provides current market prices for verification).
+		positionsPath := filepath.Join(cacheAccountDir, "positions.json")
 		positions, err := protoio.ReadMessagesJSON(positionsPath, func() *datav1.Position { return &datav1.Position{} })
 		if err == nil {
 			allPositions = append(allPositions, positions...)
 		}
 		// Load transfers for this account.
-		transfersPath := filepath.Join(accountDir, "transfers.json")
+		transfersPath := filepath.Join(cacheAccountDir, "transfers.json")
 		transfers, err := protoio.ReadMessagesJSON(transfersPath, func() *datav1.Transfer { return &datav1.Transfer{} })
 		if err == nil {
 			allTransfers = append(allTransfers, transfers...)
 		}
 		// Load trade transfers for this account.
-		tradeTransfersPath := filepath.Join(accountDir, "trade_transfers.json")
+		tradeTransfersPath := filepath.Join(cacheAccountDir, "trade_transfers.json")
 		tradeTransfers, err := protoio.ReadMessagesJSON(tradeTransfersPath, func() *datav1.TradeTransfer { return &datav1.TradeTransfer{} })
 		if err == nil {
 			allTradeTransfers = append(allTradeTransfers, tradeTransfers...)
 		}
 		// Load corporate actions for this account.
-		corporateActionsPath := filepath.Join(accountDir, "corporate_actions.json")
+		corporateActionsPath := filepath.Join(cacheAccountDir, "corporate_actions.json")
 		corporateActions, err := protoio.ReadMessagesJSON(corporateActionsPath, func() *datav1.CorporateAction { return &datav1.CorporateAction{} })
 		if err == nil {
 			allCorporateActions = append(allCorporateActions, corporateActions...)
+		}
+		// Load cash positions for this account.
+		cashPositionsPath := filepath.Join(cacheAccountDir, "cash_positions.json")
+		cashPositions, err := protoio.ReadMessagesJSON(cashPositionsPath, func() *datav1.CashPosition { return &datav1.CashPosition{} })
+		if err == nil {
+			allCashPositions = append(allCashPositions, cashPositions...)
 		}
 	}
 	// Sort all trades by date for deterministic output.
@@ -162,6 +174,7 @@ func Merge(
 		Transfers:        allTransfers,
 		TradeTransfers:   allTradeTransfers,
 		CorporateActions: allCorporateActions,
+		CashPositions:    allCashPositions,
 	}, nil
 }
 

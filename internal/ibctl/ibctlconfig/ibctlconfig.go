@@ -29,15 +29,22 @@ const configTemplate = `# The configuration file version.
 #
 # Required. The only current valid version is v1.
 version: v1
-# The data directory for ibctl to store downloaded and computed data.
+# The data directory for persistent trade data that accumulates over time.
 #
-# Required. A v1/ subdirectory will be created within this directory.
-data_dir: ~/Documents/ibctl
+# Required. Only contains trades.json per account, which is incrementally
+# merged across downloads. Cannot be safely deleted without losing history
+# beyond the 365-day API window.
+data_dir: ~/Documents/ibkr/data
+# The cache directory for downloaded snapshots (positions, FX rates, etc.).
+#
+# Required. Safe to delete — fully re-populated on the next download.
+cache_dir: ~/Documents/ibkr/cache
 # The Flex Query ID (visible next to your query name in the IBKR portal).
 #
 # Required. Create a Flex Query at https://www.interactivebrokers.com
 # under Performance & Reports > Flex Queries. Include the Trades,
-# Open Positions, and Cash Transactions sections with all fields enabled.
+# Open Positions, Cash Transactions, Cash Report, Transfers,
+# Trade Transfers, and Corporate Actions sections with all fields enabled.
 #
 # The Flex Web Service token must be set via the IBKR_FLEX_WEB_SERVICE_TOKEN environment variable.
 flex_query_id: ""
@@ -60,7 +67,7 @@ activity_statements_dir: ~/Documents/ibkr-statements
 # seed_dir: ~/Documents/ibkr/seed
 # Symbol classification configuration.
 #
-# Optional. Adds category, type, and sector metadata to holdings output.
+# Optional. Adds category, type, sector, and geo metadata to holdings output.
 # symbols:
 #   - name: NET
 #     category: EQUITY
@@ -73,8 +80,11 @@ activity_statements_dir: ~/Documents/ibkr-statements
 type ExternalConfigV1 struct {
 	// Version is the configuration file version (must be "v1").
 	Version string `yaml:"version"`
-	// DataDir is the data directory for ibctl to store downloaded and computed data.
+	// DataDir is the directory for persistent trade data that accumulates over time.
 	DataDir string `yaml:"data_dir"`
+	// CacheDir is the directory for downloaded snapshots (positions, FX rates, etc.).
+	// Safe to delete — fully re-populated on the next download.
+	CacheDir string `yaml:"cache_dir"`
 	// FlexQueryID is the Flex Query ID.
 	FlexQueryID string `yaml:"flex_query_id"`
 	// ActivityStatementsDir is the directory containing IBKR Activity Statement CSVs.
@@ -105,19 +115,11 @@ type ExternalSymbolConfigV1 struct {
 
 // Config is the validated runtime configuration derived from the config file.
 type Config struct {
-	// DataDirV1Path is the resolved versioned data directory path (data_dir/v1).
-	DataDirV1Path string
-	// AccountsDirPath is the directory for per-account cached data (data_dir/v1/accounts).
-	AccountsDirPath string
-	// FXDirPath is the directory for FX rate data per currency pair (data_dir/v1/fx).
-	FXDirPath string
+	// DataDirPath is the resolved data directory path for persistent trade data.
+	DataDirPath string
+	// CacheDirPath is the resolved cache directory path for downloaded snapshots.
+	CacheDirPath string
 	// IBKRFlexQueryID is the Flex Query ID.
-	//
-	// To create a Flex Query, log in to IBKR Client Portal, navigate to
-	// Performance & Reports > Flex Queries, and create a new query with
-	// Trades, Open Positions, Cash Transactions, Transfers, Trade Transfers,
-	// and Corporate Actions sections enabled.
-	// The Query ID is displayed next to the query name in the list.
 	IBKRFlexQueryID string
 	// ActivityStatementsDirPath is the resolved path to the Activity Statements directory.
 	ActivityStatementsDirPath string
@@ -152,6 +154,9 @@ func NewConfigV1(externalConfig ExternalConfigV1) (*Config, error) {
 	if externalConfig.DataDir == "" {
 		return nil, errors.New("data_dir is required")
 	}
+	if externalConfig.CacheDir == "" {
+		return nil, errors.New("cache_dir is required")
+	}
 	if externalConfig.FlexQueryID == "" {
 		return nil, errors.New("flex_query_id is required")
 	}
@@ -177,12 +182,16 @@ func NewConfigV1(externalConfig ExternalConfigV1) (*Config, error) {
 		accountAliases[alias] = accountID
 		accountIDToAlias[accountID] = alias
 	}
-	// Resolve the data directory path and compute the v1 subdirectory.
+	// Resolve the data directory path.
 	dataDirPath, err := xos.ExpandHome(externalConfig.DataDir)
 	if err != nil {
 		return nil, err
 	}
-	dataDirV1Path := filepath.Join(dataDirPath, "v1")
+	// Resolve the cache directory path.
+	cacheDirPath, err := xos.ExpandHome(externalConfig.CacheDir)
+	if err != nil {
+		return nil, err
+	}
 	// Resolve the activity statements directory path.
 	activityStatementsDirPath, err := xos.ExpandHome(externalConfig.ActivityStatementsDir)
 	if err != nil {
@@ -213,9 +222,8 @@ func NewConfigV1(externalConfig ExternalConfigV1) (*Config, error) {
 		}
 	}
 	return &Config{
-		DataDirV1Path:             dataDirV1Path,
-		AccountsDirPath:           filepath.Join(dataDirV1Path, "accounts"),
-		FXDirPath:                 filepath.Join(dataDirV1Path, "fx"),
+		DataDirPath:               dataDirPath,
+		CacheDirPath:              cacheDirPath,
 		IBKRFlexQueryID:           externalConfig.FlexQueryID,
 		ActivityStatementsDirPath: activityStatementsDirPath,
 		SeedDirPath:               seedDirPath,
