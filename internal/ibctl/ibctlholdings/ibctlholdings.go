@@ -11,6 +11,7 @@ package ibctlholdings
 
 import (
 	"sort"
+	"time"
 
 	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
 	mathv1 "github.com/bufdev/ibctl/internal/gen/proto/go/standard/math/v1"
@@ -19,6 +20,7 @@ import (
 	"github.com/bufdev/ibctl/internal/ibctl/ibctltaxlot"
 	"github.com/bufdev/ibctl/internal/pkg/mathpb"
 	"github.com/bufdev/ibctl/internal/pkg/moneypb"
+	"github.com/bufdev/ibctl/internal/standard/xtime"
 )
 
 // HoldingsResult contains the holdings overview along with any data
@@ -50,6 +52,10 @@ type HoldingOverview struct {
 	MarketValueUSD string `json:"market_value_usd,omitempty"`
 	// UnrealizedPnLUSD is (last price USD - avg price USD) * position.
 	UnrealizedPnLUSD string `json:"unrealized_pnl_usd,omitempty"`
+	// STCGUSD is the short-term (<365 days) unrealized P&L in USD, computed per lot.
+	STCGUSD string `json:"stcg_usd,omitempty"`
+	// LTCGUSD is the long-term (>=365 days) unrealized P&L in USD, computed per lot.
+	LTCGUSD string `json:"ltcg_usd,omitempty"`
 	// Position is the total quantity held.
 	Position *mathv1.Decimal `json:"position"`
 	// Category is the user-defined asset category (e.g., "EQUITY").
@@ -64,7 +70,7 @@ type HoldingOverview struct {
 
 // HoldingsOverviewHeaders returns the column headers for table/CSV output.
 func HoldingsOverviewHeaders() []string {
-	return []string{"SYMBOL", "CURRENCY", "LAST PRICE", "AVG PRICE", "LAST USD", "AVG USD", "MKT VAL USD", "UNRLZD P&L USD", "POSITION", "CATEGORY", "TYPE", "SECTOR", "GEO"}
+	return []string{"SYMBOL", "CURRENCY", "LAST PRICE", "AVG PRICE", "LAST USD", "AVG USD", "MKT VAL USD", "UNRLZD P&L USD", "STCG USD", "LTCG USD", "POSITION", "CATEGORY", "TYPE", "SECTOR", "GEO"}
 }
 
 // HoldingOverviewToRow converts a HoldingOverview to a string slice for CSV output.
@@ -79,6 +85,8 @@ func HoldingOverviewToRow(h *HoldingOverview) []string {
 		h.AveragePriceUSD,
 		h.MarketValueUSD,
 		h.UnrealizedPnLUSD,
+		h.STCGUSD,
+		h.LTCGUSD,
 		mathpb.ToString(h.Position),
 		h.Category,
 		h.Type,
@@ -99,6 +107,8 @@ func HoldingOverviewToTableRow(h *HoldingOverview) []string {
 		formatUSD(h.AveragePriceUSD),
 		formatUSD(h.MarketValueUSD),
 		formatUSD(h.UnrealizedPnLUSD),
+		formatUSD(h.STCGUSD),
+		formatUSD(h.LTCGUSD),
 		mathpb.ToString(h.Position),
 		h.Category,
 		h.Type,
@@ -107,24 +117,34 @@ func HoldingOverviewToTableRow(h *HoldingOverview) []string {
 	}
 }
 
-// ComputeTotals sums the MarketValueUSD and UnrealizedPnLUSD across all holdings.
-// Returns formatted USD strings for the totals row (rounded to cents with $ prefix).
-func ComputeTotals(holdings []*HoldingOverview) (string, string) {
-	var totalMktValMicros, totalPnLMicros int64
+// Totals holds the formatted total values for the summary row.
+type Totals struct {
+	// MarketValueUSD is the total market value across all holdings.
+	MarketValueUSD string
+	// UnrealizedPnLUSD is the total unrealized P&L across all holdings.
+	UnrealizedPnLUSD string
+	// STCGUSD is the total short-term unrealized P&L across all holdings.
+	STCGUSD string
+	// LTCGUSD is the total long-term unrealized P&L across all holdings.
+	LTCGUSD string
+}
+
+// ComputeTotals sums the USD value columns across all holdings.
+// Returns formatted USD strings (rounded to cents with $ prefix).
+func ComputeTotals(holdings []*HoldingOverview) *Totals {
+	var totalMktValMicros, totalPnLMicros, totalSTCGMicros, totalLTCGMicros int64
 	for _, h := range holdings {
-		if h.MarketValueUSD != "" {
-			if units, micros, err := mathpb.ParseToUnitsMicros(h.MarketValueUSD); err == nil {
-				totalMktValMicros += units*1_000_000 + micros
-			}
-		}
-		if h.UnrealizedPnLUSD != "" {
-			if units, micros, err := mathpb.ParseToUnitsMicros(h.UnrealizedPnLUSD); err == nil {
-				totalPnLMicros += units*1_000_000 + micros
-			}
-		}
+		totalMktValMicros += parseMicros(h.MarketValueUSD)
+		totalPnLMicros += parseMicros(h.UnrealizedPnLUSD)
+		totalSTCGMicros += parseMicros(h.STCGUSD)
+		totalLTCGMicros += parseMicros(h.LTCGUSD)
 	}
-	return formatUSD(moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", totalMktValMicros))),
-		formatUSD(moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", totalPnLMicros)))
+	return &Totals{
+		MarketValueUSD:   formatUSDMicros(totalMktValMicros),
+		UnrealizedPnLUSD: formatUSDMicros(totalPnLMicros),
+		STCGUSD:          formatUSDMicros(totalSTCGMicros),
+		LTCGUSD:          formatUSDMicros(totalLTCGMicros),
+	}
 }
 
 // GetHoldingsOverview computes the holdings overview from trade data using FIFO,
@@ -273,6 +293,77 @@ func GetHoldingsOverview(
 		holdings = append(holdings, holding)
 	}
 
+	// Compute per-lot STCG/LTCG split from individual tax lots.
+	// Each lot's P&L is classified as short-term (<365 days) or long-term (>=365 days).
+	today := xtime.Date{
+		Year:  time.Now().Year(),
+		Month: time.Now().Month(),
+		Day:   time.Now().Day(),
+	}
+	// Build a map of last price USD micros per symbol for lot-level P&L computation.
+	lastPriceUSDMap := make(map[string]int64, len(holdings))
+	isBondMap := make(map[string]bool, len(holdings))
+	for _, h := range holdings {
+		if h.LastPriceUSD != "" {
+			lastPriceUSDMap[h.Symbol] = parseMicros(h.LastPriceUSD)
+		}
+		priceData := marketPrices[h.Symbol]
+		isBondMap[h.Symbol] = priceData.money != nil && priceData.money.GetAssetCategory() == "BOND"
+	}
+	// Accumulate STCG and LTCG per symbol from individual tax lots.
+	type gainSplit struct {
+		stcgMicros int64
+		ltcgMicros int64
+	}
+	gainsBySymbol := make(map[string]*gainSplit)
+	for _, lot := range taxLotResult.TaxLots {
+		symbol := lot.GetSymbol()
+		lastPriceUSDMicros, ok := lastPriceUSDMap[symbol]
+		if !ok || lastPriceUSDMicros == 0 {
+			continue
+		}
+		// Convert lot cost basis to USD.
+		costUSDMoney, ok := fxStore.ConvertToUSD(lot.GetCostBasisPrice())
+		if !ok {
+			continue
+		}
+		costUSDMicros := moneypb.MoneyToMicros(costUSDMoney)
+		// Compute per-lot P&L: (last price USD - cost basis USD) * quantity.
+		pnlPerUnitMicros := lastPriceUSDMicros - costUSDMicros
+		lotQtyMicros := mathpb.ToMicros(lot.GetQuantity())
+		lotQtyUnits := lotQtyMicros / 1_000_000
+		lotQtyRemainder := lotQtyMicros % 1_000_000
+		lotPnLMicros := pnlPerUnitMicros*lotQtyUnits + pnlPerUnitMicros*lotQtyRemainder/1_000_000
+		// Bond prices are percentages of par — divide P&L by 100.
+		if isBondMap[symbol] {
+			lotPnLMicros /= 100
+		}
+		// Classify by holding period.
+		gs := gainsBySymbol[symbol]
+		if gs == nil {
+			gs = &gainSplit{}
+			gainsBySymbol[symbol] = gs
+		}
+		longTerm, err := ibctltaxlot.IsLongTerm(lot, today)
+		if err != nil {
+			continue
+		}
+		if longTerm {
+			gs.ltcgMicros += lotPnLMicros
+		} else {
+			gs.stcgMicros += lotPnLMicros
+		}
+	}
+	// Apply STCG/LTCG values to holdings.
+	for _, h := range holdings {
+		gs := gainsBySymbol[h.Symbol]
+		if gs == nil {
+			continue
+		}
+		h.STCGUSD = moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", gs.stcgMicros))
+		h.LTCGUSD = moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", gs.ltcgMicros))
+	}
+
 	// Sort by symbol for deterministic output.
 	sort.Slice(holdings, func(i, j int) bool {
 		return holdings[i].Symbol < holdings[j].Symbol
@@ -303,4 +394,21 @@ func formatUSD(value string) string {
 		return "-$" + formatted[1:]
 	}
 	return "$" + formatted
+}
+
+// formatUSDMicros formats a micros value as a USD string with $ prefix.
+func formatUSDMicros(micros int64) string {
+	return formatUSD(moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", micros)))
+}
+
+// parseMicros parses a decimal string to total micros. Returns 0 on error or empty input.
+func parseMicros(value string) int64 {
+	if value == "" {
+		return 0
+	}
+	units, micros, err := mathpb.ParseToUnitsMicros(value)
+	if err != nil {
+		return 0
+	}
+	return units*1_000_000 + micros
 }

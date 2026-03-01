@@ -119,11 +119,13 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 			rows = append(rows, ibctlholdings.HoldingOverviewToTableRow(h))
 		}
 		// Build the totals row aligned to the same columns as the data.
-		totalMktVal, totalPnL := ibctlholdings.ComputeTotals(result.Holdings)
+		totals := ibctlholdings.ComputeTotals(result.Holdings)
 		totalsRow := make([]string, len(headers))
 		totalsRow[0] = "TOTAL"
-		totalsRow[6] = totalMktVal
-		totalsRow[7] = totalPnL
+		totalsRow[6] = totals.MarketValueUSD
+		totalsRow[7] = totals.UnrealizedPnLUSD
+		totalsRow[8] = totals.STCGUSD
+		totalsRow[9] = totals.LTCGUSD
 		return cliio.WriteTableWithTotals(writer, headers, rows, totalsRow)
 	case cliio.FormatCSV:
 		headers := ibctlholdings.HoldingsOverviewHeaders()
