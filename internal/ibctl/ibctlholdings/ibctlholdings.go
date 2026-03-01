@@ -190,11 +190,19 @@ type LotOverview struct {
 	STCGUSD string `json:"stcg_usd"`
 	// LTCGUSD is the long-term P&L in USD (held >= 365 days). Equals PnLUSD or 0.
 	LTCGUSD string `json:"ltcg_usd"`
+	// Category is the user-defined asset category (e.g., "EQUITY").
+	Category string `json:"category,omitempty"`
+	// Type is the user-defined asset type (e.g., "STOCK", "ETF").
+	Type string `json:"type,omitempty"`
+	// Sector is the user-defined sector classification (e.g., "TECH").
+	Sector string `json:"sector,omitempty"`
+	// Geo is the user-defined geographic classification (e.g., "US", "INTL").
+	Geo string `json:"geo,omitempty"`
 }
 
 // LotListHeaders returns the column headers for lot list table/CSV output.
 func LotListHeaders() []string {
-	return []string{"SYMBOL", "ACCOUNT", "DATE", "QUANTITY", "CURRENCY", "AVG PRICE", "P&L", "VALUE", "AVG USD", "P&L USD", "STCG USD", "LTCG USD", "VALUE USD"}
+	return []string{"SYMBOL", "ACCOUNT", "DATE", "QUANTITY", "CURRENCY", "AVG PRICE", "P&L", "VALUE", "AVG USD", "P&L USD", "STCG USD", "LTCG USD", "VALUE USD", "CATEGORY", "TYPE", "SECTOR", "GEO"}
 }
 
 // LotOverviewToRow converts a LotOverview to a string slice for CSV output.
@@ -213,6 +221,10 @@ func LotOverviewToRow(l *LotOverview) []string {
 		l.STCGUSD,
 		l.LTCGUSD,
 		l.ValueUSD,
+		l.Category,
+		l.Type,
+		l.Sector,
+		l.Geo,
 	}
 }
 
@@ -233,6 +245,10 @@ func LotOverviewToTableRow(l *LotOverview) []string {
 		cliio.FormatUSD(l.STCGUSD),
 		cliio.FormatUSD(l.LTCGUSD),
 		cliio.FormatUSD(l.ValueUSD),
+		l.Category,
+		l.Type,
+		l.Sector,
+		l.Geo,
 	}
 }
 
@@ -369,6 +385,7 @@ func GetLotList(
 	symbol string,
 	trades []*datav1.Trade,
 	positions []*datav1.Position,
+	config *ibctlconfig.Config,
 	fxStore *ibctlfxrates.Store,
 ) (*LotListResult, error) {
 	// Filter out CASH asset category trades.
@@ -451,6 +468,13 @@ func GetLotList(
 			AveragePrice: moneypb.MoneyValueToString(lot.GetCostBasisPrice()),
 			PnL:          moneypb.MoneyValueToString(moneypb.MoneyFromMicros(currency, pnlMicros)),
 			Value:        moneypb.MoneyValueToString(moneypb.MoneyFromMicros(currency, valueMicros)),
+		}
+		// Merge symbol classification from config.
+		if symbolConfig, ok := config.SymbolConfigs[lotSymbol]; ok {
+			l.Category = symbolConfig.Category
+			l.Type = symbolConfig.Type
+			l.Sector = symbolConfig.Sector
+			l.Geo = symbolConfig.Geo
 		}
 		// Convert to USD using FX rates.
 		if fxStore != nil {

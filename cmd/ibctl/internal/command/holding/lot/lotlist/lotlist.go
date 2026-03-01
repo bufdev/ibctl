@@ -103,7 +103,7 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	// Load FX rates for USD conversion.
 	fxStore := ibctlfxrates.NewStore(ibctlpath.CacheFXDirPath(config.DirPath))
 	// Get the lot list, optionally filtered by symbol.
-	result, err := ibctlholdings.GetLotList(flags.Symbol, mergedData.Trades, mergedData.Positions, fxStore)
+	result, err := ibctlholdings.GetLotList(flags.Symbol, mergedData.Trades, mergedData.Positions, config, fxStore)
 	if err != nil {
 		return err
 	}
