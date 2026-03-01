@@ -46,10 +46,11 @@ type MergedData struct {
 // Merge reads Activity Statement CSVs and Flex Query cached data for all accounts,
 // merges them, and returns the result.
 //
-// For each account, CSV trades are loaded first to determine which dates they cover.
-// Flex Query trades are then loaded only for dates NOT covered by the CSV data, since
-// the two sources represent the same trades at different granularities (the Flex Query
-// splits order executions while Activity Statements consolidate them).
+// For each account, Flex Query trades are loaded first as the primary source
+// (they preserve individual order fills). CSV trades are then loaded only for
+// dates NOT covered by the Flex Query data, since the two sources represent
+// the same trades at different granularities (CSVs consolidate order executions
+// while the Flex Query preserves individual fills).
 func Merge(
 	dataAccountsDirPath string,
 	cacheAccountsDirPath string,
@@ -63,11 +64,28 @@ func Merge(
 	var allTradeTransfers []*datav1.TradeTransfer
 	var allCorporateActions []*datav1.CorporateAction
 	var allCashPositions []*datav1.CashPosition
-	// Process each account: load CSVs first, then supplement with Flex Query data.
+	// Process each account: load Flex Query trades first, then supplement with CSVs.
 	for alias := range accountAliases {
-		// Step 1: Load Activity Statement CSV trades for this account.
-		// These are the primary source of truth.
-		var csvTrades []*datav1.Trade
+		// Step 1: Load Flex Query cached trades for this account.
+		// These are the primary source — they preserve individual order fills.
+		dataAccountDir := filepath.Join(dataAccountsDirPath, alias)
+		tradesPath := filepath.Join(dataAccountDir, "trades.json")
+		flexTrades, err := protoio.ReadMessagesJSON(tradesPath, func() *datav1.Trade { return &datav1.Trade{} })
+		if err != nil {
+			flexTrades = nil
+		}
+		// Build the set of symbols covered by Flex Query trades and their date range.
+		// CSV trades for these symbols within this range will be excluded.
+		flexSymbols := make(map[string]bool, len(flexTrades))
+		flexMinDate, flexMaxDate := tradeDateRange(flexTrades)
+		for _, trade := range flexTrades {
+			flexSymbols[trade.GetSymbol()] = true
+		}
+		allTrades = append(allTrades, flexTrades...)
+		// Step 2: Load Activity Statement CSV trades. For symbols covered by
+		// the Flex Query, only use CSV trades outside the Flex Query date range
+		// (CSVs extend history beyond the 365-day API window). For symbols NOT
+		// in the Flex Query, all CSV trades are included.
 		csvDir := filepath.Join(activityStatementsDirPath, alias)
 		csvStatements, err := ibkractivitycsv.ParseDirectory(csvDir)
 		if err == nil {
@@ -77,18 +95,20 @@ func Merge(
 					if err != nil {
 						continue
 					}
-					csvTrades = append(csvTrades, trade)
+					// Skip CSV trades only for symbols that have Flex Query coverage
+					// within the Flex Query date range. Symbols not in the Flex Query
+					// (e.g., from a different data source) are always included.
+					if flexMinDate != "" && flexMaxDate != "" && flexSymbols[trade.GetSymbol()] {
+						tradeDate := protoDateString(trade.GetTradeDate())
+						if tradeDate >= flexMinDate && tradeDate <= flexMaxDate {
+							continue
+						}
+					}
+					allTrades = append(allTrades, trade)
 				}
-				// CSV positions are historical snapshots — we use Flex Query positions
-				// instead since they have current market prices. CSV positions are not
-				// loaded here.
 			}
 		}
-		// Find the date range covered by CSV trades for this account.
-		// Flex Query trades within this range will be excluded.
-		csvMinDate, csvMaxDate := tradeDateRange(csvTrades)
-		allTrades = append(allTrades, csvTrades...)
-		// Step 2: Load imported transactions from previous broker (seed data).
+		// Step 3: Load imported transactions from previous broker (seed data).
 		// These are the complete normalized transaction history (buys, sells,
 		// splits, dividends, expiries) from UBS/RBC, converted to Trade protos.
 		if seedDirPath != "" {
@@ -103,23 +123,6 @@ func Merge(
 						allTrades = append(allTrades, trade)
 					}
 				}
-			}
-		}
-		// Step 3: Load Flex Query cached trades, excluding dates covered by CSVs.
-		dataAccountDir := filepath.Join(dataAccountsDirPath, alias)
-		tradesPath := filepath.Join(dataAccountDir, "trades.json")
-		cachedTrades, err := protoio.ReadMessagesJSON(tradesPath, func() *datav1.Trade { return &datav1.Trade{} })
-		if err == nil {
-			for _, trade := range cachedTrades {
-				// Skip Flex Query trades that fall within the CSV date range,
-				// since the CSV data covers those dates at the correct granularity.
-				if csvMinDate != "" && csvMaxDate != "" {
-					tradeDate := protoDateString(trade.GetTradeDate())
-					if tradeDate >= csvMinDate && tradeDate <= csvMaxDate {
-						continue
-					}
-				}
-				allTrades = append(allTrades, trade)
 			}
 		}
 		// Load snapshot data from the cache directory.

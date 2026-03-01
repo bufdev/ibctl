@@ -110,12 +110,14 @@ func run(ctx context.Context, container appext.Container, flags *flags, symbol s
 		for _, l := range result.Lots {
 			rows = append(rows, ibctlholdings.LotOverviewToTableRow(l))
 		}
-		// Build totals row for P&L USD and VALUE USD columns.
-		totalPnL, totalValue := ibctlholdings.ComputeLotTotals(result.Lots)
+		// Build totals row for P&L USD, VALUE USD, STCG USD, LTCG USD columns.
+		totals := ibctlholdings.ComputeLotTotals(result.Lots)
 		totalsRow := make([]string, len(headers))
 		totalsRow[0] = "TOTAL"
-		totalsRow[8] = totalPnL
-		totalsRow[9] = totalValue
+		totalsRow[8] = totals.PnLUSD
+		totalsRow[9] = totals.STCGUSD
+		totalsRow[10] = totals.LTCGUSD
+		totalsRow[11] = totals.ValueUSD
 		return cliio.WriteTableWithTotals(writer, headers, rows, totalsRow)
 	case cliio.FormatCSV:
 		headers := ibctlholdings.LotListHeaders()

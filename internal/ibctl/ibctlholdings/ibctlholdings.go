@@ -184,11 +184,15 @@ type LotOverview struct {
 	PnLUSD string `json:"pnl_usd"`
 	// ValueUSD is the current market value in USD.
 	ValueUSD string `json:"value_usd"`
+	// STCGUSD is the short-term P&L in USD (held < 365 days). Equals PnLUSD or 0.
+	STCGUSD string `json:"stcg_usd"`
+	// LTCGUSD is the long-term P&L in USD (held >= 365 days). Equals PnLUSD or 0.
+	LTCGUSD string `json:"ltcg_usd"`
 }
 
 // LotListHeaders returns the column headers for lot list table/CSV output.
 func LotListHeaders() []string {
-	return []string{"ACCOUNT", "DATE", "QUANTITY", "CURRENCY", "AVG PRICE", "P&L", "VALUE", "AVG USD", "P&L USD", "VALUE USD"}
+	return []string{"ACCOUNT", "DATE", "QUANTITY", "CURRENCY", "AVG PRICE", "P&L", "VALUE", "AVG USD", "P&L USD", "STCG USD", "LTCG USD", "VALUE USD"}
 }
 
 // LotOverviewToRow converts a LotOverview to a string slice for CSV output.
@@ -203,6 +207,8 @@ func LotOverviewToRow(l *LotOverview) []string {
 		l.Value,
 		l.AverageUSD,
 		l.PnLUSD,
+		l.STCGUSD,
+		l.LTCGUSD,
 		l.ValueUSD,
 	}
 }
@@ -220,20 +226,39 @@ func LotOverviewToTableRow(l *LotOverview) []string {
 		l.Value,
 		cliio.FormatUSD(l.AverageUSD),
 		cliio.FormatUSD(l.PnLUSD),
+		cliio.FormatUSD(l.STCGUSD),
+		cliio.FormatUSD(l.LTCGUSD),
 		cliio.FormatUSD(l.ValueUSD),
 	}
 }
 
-// ComputeLotTotals sums the P&L USD and VALUE USD across all lots.
-// Returns formatted USD strings for the totals row.
-func ComputeLotTotals(lots []*LotOverview) (string, string) {
-	var totalPnLMicros, totalValueMicros int64
-	totalPnLMicros += mathpb.ParseMicros("0")
+// LotTotals holds the formatted total values for the lot list summary row.
+type LotTotals struct {
+	// PnLUSD is the total unrealized P&L in USD.
+	PnLUSD string
+	// ValueUSD is the total market value in USD.
+	ValueUSD string
+	// STCGUSD is the total short-term P&L in USD.
+	STCGUSD string
+	// LTCGUSD is the total long-term P&L in USD.
+	LTCGUSD string
+}
+
+// ComputeLotTotals sums the USD value columns across all lots.
+func ComputeLotTotals(lots []*LotOverview) *LotTotals {
+	var totalPnLMicros, totalValueMicros, totalSTCGMicros, totalLTCGMicros int64
 	for _, l := range lots {
 		totalPnLMicros += mathpb.ParseMicros(l.PnLUSD)
 		totalValueMicros += mathpb.ParseMicros(l.ValueUSD)
+		totalSTCGMicros += mathpb.ParseMicros(l.STCGUSD)
+		totalLTCGMicros += mathpb.ParseMicros(l.LTCGUSD)
 	}
-	return cliio.FormatUSDMicros(totalPnLMicros), cliio.FormatUSDMicros(totalValueMicros)
+	return &LotTotals{
+		PnLUSD:   cliio.FormatUSDMicros(totalPnLMicros),
+		ValueUSD: cliio.FormatUSDMicros(totalValueMicros),
+		STCGUSD:  cliio.FormatUSDMicros(totalSTCGMicros),
+		LTCGUSD:  cliio.FormatUSDMicros(totalLTCGMicros),
+	}
 }
 
 // GetLotList returns the individual tax lots for a given symbol.
@@ -321,8 +346,34 @@ func GetLotList(
 				l.ValueUSD = moneypb.MoneyValueToString(usdValue)
 			}
 		}
+		// Classify P&L as short-term or long-term based on holding period.
+		// For a single lot, the entire P&L is one or the other.
+		if l.PnLUSD != "" {
+			today := xtime.Date{
+				Year:  time.Now().Year(),
+				Month: time.Now().Month(),
+				Day:   time.Now().Day(),
+			}
+			longTerm, err := ibctltaxlot.IsLongTerm(lot, today)
+			if err == nil {
+				if longTerm {
+					l.STCGUSD = "0"
+					l.LTCGUSD = l.PnLUSD
+				} else {
+					l.STCGUSD = l.PnLUSD
+					l.LTCGUSD = "0"
+				}
+			}
+		}
 		lots = append(lots, l)
 	}
+	// Sort lots by date for chronological display.
+	sort.Slice(lots, func(i, j int) bool {
+		if lots[i].Date != lots[j].Date {
+			return lots[i].Date < lots[j].Date
+		}
+		return lots[i].Account < lots[j].Account
+	})
 	return &LotListResult{Lots: lots}, nil
 }
 
