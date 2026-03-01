@@ -10,6 +10,7 @@ import (
 	"buf.build/go/app/appcmd"
 	"buf.build/go/app/appext"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/config"
+	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/data"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/download"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/holdings"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/probe"
@@ -27,13 +28,14 @@ func newRootCommand(name string) *appcmd.Command {
 		Short: "Analyze Interactive Brokers holdings and trades",
 		Long: `Analyze Interactive Brokers holdings and trades.
 
-Configuration: ibctl.yaml in current directory (override with --config)
-Data:          Configured via data_dir in config
+All commands operate on an ibctl directory (--dir flag, defaults to current directory)
+containing ibctl.yaml and well-known subdirectories for data, cache, and statements.
 
-Run "ibctl config init" to create a configuration file.`,
+Run "ibctl config init" to create a new ibctl directory.`,
 		BindPersistentFlags: builder.BindRoot,
 		SubCommands: []*appcmd.Command{
 			config.NewCommand("config", builder),
+			data.NewCommand("data", builder),
 			download.NewCommand("download", builder),
 			holdings.NewCommand("holdings", builder),
 			probe.NewCommand("probe", builder),
