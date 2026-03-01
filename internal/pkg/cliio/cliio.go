@@ -56,6 +56,32 @@ func WriteTable(writer io.Writer, headers []string, rows [][]string) error {
 	return tw.Flush()
 }
 
+// WriteTableWithTotals writes a table followed by a blank line and a totals row,
+// all through the same tabwriter so columns align between data and totals.
+func WriteTableWithTotals(writer io.Writer, headers []string, rows [][]string, totalsRow []string) error {
+	tw := tabwriter.NewWriter(writer, 0, 0, 2, ' ', 0)
+	// Write header row.
+	if _, err := fmt.Fprintln(tw, strings.Join(headers, "\t")); err != nil {
+		return err
+	}
+	// Write data rows.
+	for _, row := range rows {
+		if _, err := fmt.Fprintln(tw, strings.Join(row, "\t")); err != nil {
+			return err
+		}
+	}
+	// Write a blank separator line with tabs to preserve column alignment.
+	blankRow := make([]string, len(headers))
+	if _, err := fmt.Fprintln(tw, strings.Join(blankRow, "\t")); err != nil {
+		return err
+	}
+	// Write the totals row aligned to the same columns.
+	if _, err := fmt.Fprintln(tw, strings.Join(totalsRow, "\t")); err != nil {
+		return err
+	}
+	return tw.Flush()
+}
+
 // WriteCSVRecords writes CSV records to the writer.
 func WriteCSVRecords(writer io.Writer, records [][]string) error {
 	csvWriter := csv.NewWriter(writer)

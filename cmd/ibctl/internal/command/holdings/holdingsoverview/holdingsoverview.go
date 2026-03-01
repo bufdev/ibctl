@@ -114,18 +114,17 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	switch format {
 	case cliio.FormatTable:
 		headers := ibctlholdings.HoldingsOverviewHeaders()
-		rows := make([][]string, 0, len(result.Holdings)+1)
+		rows := make([][]string, 0, len(result.Holdings))
 		for _, h := range result.Holdings {
-			rows = append(rows, ibctlholdings.HoldingOverviewToRow(h))
+			rows = append(rows, ibctlholdings.HoldingOverviewToTableRow(h))
 		}
-		// Append a totals row summing MKT VAL USD and UNRLZD P&L USD.
+		// Build the totals row aligned to the same columns as the data.
 		totalMktVal, totalPnL := ibctlholdings.ComputeTotals(result.Holdings)
 		totalsRow := make([]string, len(headers))
 		totalsRow[0] = "TOTAL"
 		totalsRow[6] = totalMktVal
 		totalsRow[7] = totalPnL
-		rows = append(rows, totalsRow)
-		return cliio.WriteTable(writer, headers, rows)
+		return cliio.WriteTableWithTotals(writer, headers, rows, totalsRow)
 	case cliio.FormatCSV:
 		headers := ibctlholdings.HoldingsOverviewHeaders()
 		records := make([][]string, 0, len(result.Holdings)+1)

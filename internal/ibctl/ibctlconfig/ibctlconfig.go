@@ -66,6 +66,7 @@ activity_statements_dir: ~/Documents/ibkr-statements
 #     category: EQUITY
 #     type: STOCK
 #     sector: TECH
+#     geo: US
 `
 
 // ExternalConfigV1 is the YAML-serializable configuration file structure for version v1.
@@ -98,6 +99,8 @@ type ExternalSymbolConfigV1 struct {
 	Type string `yaml:"type"`
 	// Sector is the sector classification (e.g., "TECH").
 	Sector string `yaml:"sector"`
+	// Geo is the geographic classification (e.g., "US", "INTL").
+	Geo string `yaml:"geo"`
 }
 
 // Config is the validated runtime configuration derived from the config file.
@@ -137,6 +140,8 @@ type SymbolConfig struct {
 	Type string
 	// Sector is the sector classification (e.g., "TECH").
 	Sector string
+	// Geo is the geographic classification (e.g., "US", "INTL").
+	Geo string
 }
 
 // NewConfigV1 validates an ExternalConfigV1 and returns a runtime Config.
@@ -204,6 +209,7 @@ func NewConfigV1(externalConfig ExternalConfigV1) (*Config, error) {
 			Category: s.Category,
 			Type:     s.Type,
 			Sector:   s.Sector,
+			Geo:      s.Geo,
 		}
 	}
 	return &Config{

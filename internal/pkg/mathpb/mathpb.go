@@ -67,6 +67,68 @@ func ToString(d *mathv1.Decimal) string {
 	return fmt.Sprintf("%s%d.%s", sign, units, decimalStr)
 }
 
+// Format formats a decimal value rounded to the given precision (number of
+// decimal places) with comma separators for the integer portion.
+// Examples with precision=2: 1234567.891 → "1,234,567.89", -42.5 → "-42.50".
+// Examples with precision=0: 1234.5 → "1,235".
+func Format(d *mathv1.Decimal, precision int) string {
+	if d == nil {
+		if precision > 0 {
+			return "0." + strings.Repeat("0", precision)
+		}
+		return "0"
+	}
+	totalMicros := ToMicros(d)
+	negative := totalMicros < 0
+	if negative {
+		totalMicros = -totalMicros
+	}
+	// Compute the divisor for the requested precision.
+	// Micros has 6 decimal places; we need to reduce to the requested precision.
+	// divisor = 10^(6-precision), rounding half = divisor/2.
+	divisor := int64(1)
+	for range 6 - precision {
+		divisor *= 10
+	}
+	// Round to nearest unit at the requested precision.
+	totalMicros = (totalMicros + divisor/2) / divisor
+	// Split into integer and fractional parts at the requested precision.
+	fracDivisor := int64(1)
+	for range precision {
+		fracDivisor *= 10
+	}
+	intPart := totalMicros / fracDivisor
+	fracPart := totalMicros % fracDivisor
+	sign := ""
+	if negative {
+		sign = "-"
+	}
+	if precision == 0 {
+		return sign + addCommas(intPart)
+	}
+	return fmt.Sprintf("%s%s.%0*d", sign, addCommas(intPart), precision, fracPart)
+}
+
+// addCommas inserts comma separators into a non-negative integer (e.g., 1234567 → "1,234,567").
+func addCommas(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	// Determine how many digits are before the first comma.
+	firstGroup := len(s) % 3
+	if firstGroup == 0 {
+		firstGroup = 3
+	}
+	b.WriteString(s[:firstGroup])
+	for i := firstGroup; i < len(s); i += 3 {
+		b.WriteByte(',')
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
+}
+
 // ParseToUnitsMicros parses a decimal string (e.g., "123.456789") into units and micros.
 func ParseToUnitsMicros(value string) (int64, int64, error) {
 	if value == "" {

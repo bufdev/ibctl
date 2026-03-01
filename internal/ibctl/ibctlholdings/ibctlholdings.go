@@ -58,14 +58,17 @@ type HoldingOverview struct {
 	Type string `json:"type,omitempty"`
 	// Sector is the user-defined sector classification (e.g., "TECH").
 	Sector string `json:"sector,omitempty"`
+	// Geo is the user-defined geographic classification (e.g., "US", "INTL").
+	Geo string `json:"geo,omitempty"`
 }
 
 // HoldingsOverviewHeaders returns the column headers for table/CSV output.
 func HoldingsOverviewHeaders() []string {
-	return []string{"SYMBOL", "CURRENCY", "LAST PRICE", "AVG PRICE", "LAST USD", "AVG USD", "MKT VAL USD", "UNRLZD P&L USD", "POSITION", "CATEGORY", "TYPE", "SECTOR"}
+	return []string{"SYMBOL", "CURRENCY", "LAST PRICE", "AVG PRICE", "LAST USD", "AVG USD", "MKT VAL USD", "UNRLZD P&L USD", "POSITION", "CATEGORY", "TYPE", "SECTOR", "GEO"}
 }
 
-// HoldingOverviewToRow converts a HoldingOverview to a string slice for table/CSV output.
+// HoldingOverviewToRow converts a HoldingOverview to a string slice for CSV output.
+// USD values are kept as raw decimals for machine-readable output.
 func HoldingOverviewToRow(h *HoldingOverview) []string {
 	return []string{
 		h.Symbol,
@@ -80,11 +83,32 @@ func HoldingOverviewToRow(h *HoldingOverview) []string {
 		h.Category,
 		h.Type,
 		h.Sector,
+		h.Geo,
+	}
+}
+
+// HoldingOverviewToTableRow converts a HoldingOverview to a string slice for
+// table display. USD values are rounded to cents with $ prefix and comma separators.
+func HoldingOverviewToTableRow(h *HoldingOverview) []string {
+	return []string{
+		h.Symbol,
+		h.Currency,
+		h.LastPrice,
+		h.AveragePrice,
+		formatUSD(h.LastPriceUSD),
+		formatUSD(h.AveragePriceUSD),
+		formatUSD(h.MarketValueUSD),
+		formatUSD(h.UnrealizedPnLUSD),
+		mathpb.ToString(h.Position),
+		h.Category,
+		h.Type,
+		h.Sector,
+		h.Geo,
 	}
 }
 
 // ComputeTotals sums the MarketValueUSD and UnrealizedPnLUSD across all holdings.
-// Returns formatted strings for the totals row.
+// Returns formatted USD strings for the totals row (rounded to cents with $ prefix).
 func ComputeTotals(holdings []*HoldingOverview) (string, string) {
 	var totalMktValMicros, totalPnLMicros int64
 	for _, h := range holdings {
@@ -99,8 +123,8 @@ func ComputeTotals(holdings []*HoldingOverview) (string, string) {
 			}
 		}
 	}
-	return moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", totalMktValMicros)),
-		moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", totalPnLMicros))
+	return formatUSD(moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", totalMktValMicros))),
+		formatUSD(moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", totalPnLMicros)))
 }
 
 // GetHoldingsOverview computes the holdings overview from trade data using FIFO,
@@ -244,6 +268,7 @@ func GetHoldingsOverview(
 			holding.Category = symbolConfig.Category
 			holding.Type = symbolConfig.Type
 			holding.Sector = symbolConfig.Sector
+			holding.Geo = symbolConfig.Geo
 		}
 		holdings = append(holdings, holding)
 	}
@@ -257,4 +282,25 @@ func GetHoldingsOverview(
 		UnmatchedSells:        taxLotResult.UnmatchedSells,
 		PositionDiscrepancies: discrepancies,
 	}, nil
+}
+
+// *** PRIVATE ***
+
+// formatUSD formats a raw decimal string as a USD value with $ prefix,
+// rounded to cents with comma separators (e.g., "$1,234.56", "-$789.01").
+// Returns empty string for empty input.
+func formatUSD(value string) string {
+	if value == "" {
+		return ""
+	}
+	decimal, err := mathpb.NewDecimal(value)
+	if err != nil {
+		return value
+	}
+	formatted := mathpb.Format(decimal, 2)
+	// Prepend $ after any negative sign.
+	if len(formatted) > 0 && formatted[0] == '-' {
+		return "-$" + formatted[1:]
+	}
+	return "$" + formatted
 }
