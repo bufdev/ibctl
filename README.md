@@ -52,7 +52,8 @@ Follow these exact steps in the IBKR portal to create a Flex Query and generate 
 | Path | Purpose | Override |
 |------|---------|----------|
 | `ibctl.yaml` | Configuration file in current directory | `--config` flag |
-| `<data_dir>/v1/<account>/` | Per-account downloaded data cache | Set `data_dir` and `accounts` in config |
+| `<data_dir>/v1/accounts/<alias>/` | Per-account downloaded data cache | Set `data_dir` and `accounts` in config |
+| `<data_dir>/v1/fx/` | FX rate data per currency pair | Derived from `data_dir` |
 
 ## Environment Variables
 
@@ -134,7 +135,7 @@ ibctl download
 ibctl probe
 ```
 
-Data is downloaded automatically when commands need it. Use `ibctl download` to force a refresh. Each download merges new data with the existing cache — trades are deduplicated by trade ID, so it is safe to run repeatedly. Data is stored per account under `<data_dir>/v1/<account_alias>/`.
+Data is downloaded automatically when commands need it. Use `ibctl download` to force a refresh. Each download merges new data with the existing cache — trades are deduplicated by trade ID, so it is safe to run repeatedly. Data is stored per account under `<data_dir>/v1/accounts/<alias>/`.
 
 ## Commands
 
@@ -204,24 +205,76 @@ To keep data current, the Flex Query API provides the latest 365 days. To add ol
 
 ibctl supports multiple IBKR accounts via the `accounts` section in the config. Each account is identified by an alias (e.g., "rrsp", "holdco") that maps to an IBKR account ID.
 
-- **Downloaded data** is stored per account under `<data_dir>/v1/<alias>/`
+- **Downloaded data** is stored per account under `<data_dir>/v1/accounts/<alias>/`
 - **Holdings overview** shows a combined view aggregated across all accounts
 - **Transfers** between accounts and from other brokers (ACATS) are tracked and converted to synthetic trades for accurate FIFO computation
 - **Corporate actions** (stock splits, mergers, spinoffs) are captured from the Flex Query API
 
 Account numbers are confidential — only aliases appear in output and directory names.
 
-## Data Storage
+## Implementation
 
-Raw API data is cached as protobuf-JSON files under per-account directories (`<data_dir>/v1/<alias>/`). Each file stores newline-separated proto JSON (one message per line), serialized using `protojson` with proto field names. Tax lots and derived computations are performed at read time from the merged data (Activity Statement CSVs + cached API data).
+### Data Directory Structure
 
-| File | Protobuf Message | Description |
-|------|-----------------|-------------|
-| `<alias>/trades.json` | `ibctl.data.v1.Trade` | All trades for this account. Includes trade ID, account, dates, symbol, side (buy/sell), quantity, price, proceeds, commission, currency code, and FIFO realized P&L. |
-| `<alias>/positions.json` | `ibctl.data.v1.Position` | Open positions for this account, including quantity, cost basis price, market price, market value, currency code, and unrealized P&L. |
-| `<alias>/transfers.json` | `ibctl.data.v1.Transfer` | Position transfers (ACATS, ATON, FOP, internal) for this account. Transfer-in records are converted to synthetic buy trades for FIFO processing. |
-| `<alias>/trade_transfers.json` | `ibctl.data.v1.TradeTransfer` | Transferred trade cost basis records. Preserves original trade date and cost basis for positions transferred from other brokers. |
-| `<alias>/corporate_actions.json` | `ibctl.data.v1.CorporateAction` | Corporate action events (stock splits, mergers, spinoffs) for this account. |
-| `exchange_rates.json` | `ibctl.data.v1.ExchangeRate` | Currency exchange rates (shared across accounts) with date, base/quote currency codes, rate, and provider (ibkr or [frankfurter.dev](https://frankfurter.dev)). |
+All cached data lives under `<data_dir>/v1/`. Per-account data is stored in `accounts/<alias>/`, and FX rate data is stored in `fx/`.
 
-Monetary values use `standard.money.v1.Money` with units and micros (6 decimal places). Dates use `standard.time.v1.Date` with year, month, and day fields.
+```
+<data_dir>/v1/
+├── accounts/                          # Per-account cached data from IBKR Flex Query API.
+│   ├── rrsp/
+│   │   ├── trades.json                # All trades (buys/sells) for this account.
+│   │   ├── positions.json             # Latest IBKR-reported open positions snapshot.
+│   │   ├── transfers.json             # Position transfers (ACATS, FOP, internal).
+│   │   ├── trade_transfers.json       # Cost basis metadata for transferred positions.
+│   │   └── corporate_actions.json     # Stock splits, mergers, spinoffs.
+│   ├── holdco/
+│   │   └── (same files)
+│   └── individual/
+│       └── (same files)
+└── fx/                                # FX rate data per currency pair.
+    └── exchange_rates.json            # Currency exchange rates (all pairs).
+```
+
+### Data Files
+
+All files use newline-separated protobuf JSON (one message per line), serialized with `protojson` using proto field names. Monetary values use `standard.money.v1.Money` (units + micros for 6 decimal places). Dates use `standard.time.v1.Date` (year, month, day).
+
+| File | Proto Message | Merge Strategy | Purpose |
+|------|--------------|----------------|---------|
+| `trades.json` | `ibctl.data.v1.Trade` | Deduplicated by trade ID, new overwrites old | All trades (buys/sells) for this account. Incrementally merged across downloads so the cache grows over time, overcoming IBKR's 365-day API limit. |
+| `positions.json` | `ibctl.data.v1.Position` | Overwritten entirely on each download | Latest snapshot of IBKR-reported open positions. Provides current market prices (LAST PRICE column) and serves as verification data — computed holdings are compared against these to detect discrepancies. **Not the source of truth for quantities or cost basis** — those are computed via FIFO from trades. |
+| `transfers.json` | `ibctl.data.v1.Transfer` | Overwritten on each download | Position transfers between accounts or brokers (ACATS, ATON, FOP, internal). Transfer-in records with a non-zero transfer price are converted to synthetic buy trades for FIFO processing. Transfer-out records become synthetic sell trades. Transfers without a price are informational only. |
+| `trade_transfers.json` | `ibctl.data.v1.TradeTransfer` | Overwritten on each download | Cost basis and holding period metadata for positions transferred from other brokers. Preserves the **original trade date** (for long-term vs short-term capital gains) and **original cost basis** from the source broker. Converted to synthetic buy trades using the original date, not the transfer date. |
+| `corporate_actions.json` | `ibctl.data.v1.CorporateAction` | Overwritten on each download | Corporate action events (forward/reverse splits, mergers, spinoffs) for audit purposes. |
+| `exchange_rates.json` | `ibctl.data.v1.ExchangeRate` | Deduplicated by date + currency pair | FX rates from IBKR cash transactions and [frankfurter.dev](https://frankfurter.dev). Each rate has a date, base/quote currency codes, rate value, and provider field. |
+
+### Seed Data
+
+The optional `seed_dir` in the config points to a directory of permanent, manually curated data from previous brokers (e.g., UBS, RBC). This data is never modified by ibctl.
+
+```
+<seed_dir>/
+└── <alias>/
+    └── transactions.json              # Normalized transaction history from previous brokers.
+```
+
+`transactions.json` uses the `ibctl.data.v1.ImportedTransaction` proto, which represents all transaction types from the previous broker: buys, sells, splits, stock dividends, expiries, redemptions, dividends, interest, fees, withholding tax, transfers, deposits, and withdrawals. At read time, only security-affecting transactions (buys, sells, splits, expiries, redemptions, stock dividends) are converted to Trade protos for FIFO processing. The rest are stored for income tracking and audit.
+
+### Data Pipeline
+
+The `holdings overview` command runs the following pipeline:
+
+1. **Download** (`ibctl download` or automatic): Fetches all accounts' data from the IBKR Flex Query API in a single API call. Trades are incrementally merged with the cache (deduplicated by trade ID). Positions are overwritten with the latest snapshot. FX rates are extracted from cash transactions and supplemented by [frankfurter.dev](https://frankfurter.dev) for any missing dates.
+
+2. **Merge** (`ibctlmerge`): Combines three data sources per account, with CSV data taking precedence for overlapping date ranges:
+   - **Activity Statement CSVs** (`activity_statements_dir/<alias>/*.csv`) — primary source of truth for trades. These cover dates that the CSVs span; Flex Query trades within this range are excluded because the two sources represent the same trades at different granularities (CSVs consolidate order executions, Flex Query splits them).
+   - **Seed data** (`seed_dir/<alias>/transactions.json`) — imported transactions from previous brokers, converted to Trade protos for FIFO.
+   - **Flex Query cache** (`accounts/<alias>/trades.json`) — recent trades from the API, used only for dates not covered by CSVs.
+
+3. **FIFO Tax Lot Computation** (`ibctltaxlot`): Processes all merged trades using First-In-First-Out ordering, grouped by (account, symbol). Transfers and trade transfers are converted to synthetic trades before processing. Buys create new lots, sells consume the oldest lots first. Short positions are supported (sell-to-open creates negative lots, buy-to-close closes them). Within the same date, buys are processed before sells to handle same-day buy+sell scenarios.
+
+4. **Position Aggregation**: Tax lots are aggregated into per-account positions with weighted average cost basis, then combined across accounts for display.
+
+5. **Verification**: Computed positions are compared against IBKR-reported positions (`positions.json`). Quantity mismatches and cost basis discrepancies exceeding 0.1% are logged as warnings. Positions that exist only in computed data or only in IBKR's report are also flagged.
+
+6. **Display**: Holdings are rendered with current market prices from IBKR positions and optional symbol classifications from the config.

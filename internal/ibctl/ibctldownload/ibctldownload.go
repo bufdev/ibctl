@@ -21,7 +21,9 @@ import (
 
 	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
+	"github.com/bufdev/ibctl/internal/pkg/bankofcanada"
 	"github.com/bufdev/ibctl/internal/pkg/frankfurter"
+	"github.com/bufdev/ibctl/internal/pkg/ibkractivitycsv"
 	"github.com/bufdev/ibctl/internal/pkg/ibkrflexquery"
 	"github.com/bufdev/ibctl/internal/pkg/mathpb"
 	"github.com/bufdev/ibctl/internal/pkg/moneypb"
@@ -48,6 +50,7 @@ func NewDownloader(
 	config *ibctlconfig.Config,
 	flexQueryClient ibkrflexquery.Client,
 	fxRateClient frankfurter.Client,
+	bocClient bankofcanada.Client,
 ) Downloader {
 	return &downloader{
 		logger:          logger,
@@ -56,6 +59,7 @@ func NewDownloader(
 		config:          config,
 		flexQueryClient: flexQueryClient,
 		fxRateClient:    fxRateClient,
+		bocClient:       bocClient,
 	}
 }
 
@@ -66,6 +70,7 @@ type downloader struct {
 	config          *ibctlconfig.Config
 	flexQueryClient ibkrflexquery.Client
 	fxRateClient    frankfurter.Client
+	bocClient       bankofcanada.Client
 }
 
 func (d *downloader) Download(ctx context.Context) error {
@@ -105,22 +110,11 @@ func (d *downloader) Download(ctx context.Context) error {
 		}
 		allTrades = append(allTrades, trades...)
 	}
-	// Exchange rates are shared across accounts — merge from all cash transactions.
-	var allCashTransactions []ibkrflexquery.XMLCashTransaction
-	for _, statement := range statements {
-		allCashTransactions = append(allCashTransactions, statement.CashTransactions...)
+	// Eagerly download FX rates for all non-USD currencies found in trades.
+	// Rates are stored per pair in fx/{BASE}.{QUOTE}/rates.json.
+	if err := d.downloadFXRates(ctx, allTrades); err != nil {
+		d.logger.Warn("failed to download FX rates", "error", err)
 	}
-	newExchangeRates := d.extractExchangeRates(allCashTransactions)
-	exchangeRates := d.mergeExchangeRatesWithCache(newExchangeRates)
-	// Fetch any rates still missing from frankfurter.dev.
-	if err := d.fetchMissingExchangeRates(ctx, exchangeRates, allTrades); err != nil {
-		d.logger.Warn("failed to fetch missing exchange rates", "error", err)
-	}
-	exchangeRatesPath := filepath.Join(d.config.FXDirPath, "exchange_rates.json")
-	if err := protoio.WriteMessagesJSON(exchangeRatesPath, exchangeRates); err != nil {
-		return fmt.Errorf("writing exchange rates: %w", err)
-	}
-	d.logger.Info("exchange rates written", "count", len(exchangeRates), "path", exchangeRatesPath)
 	d.logger.Info("download complete")
 	return nil
 }
@@ -220,52 +214,6 @@ func (d *downloader) mergeTradesWithCache(newTrades []*datav1.Trade, accountDir 
 	return merged
 }
 
-// mergeExchangeRatesWithCache reads existing cached exchange rates and merges new
-// rates into them, deduplicating by date + base currency + quote currency.
-func (d *downloader) mergeExchangeRatesWithCache(newRates []*datav1.ExchangeRate) []*datav1.ExchangeRate {
-	// Exchange rates are global (not per-account).
-	exchangeRatesPath := filepath.Join(d.config.FXDirPath, "exchange_rates.json")
-	cachedRates, err := protoio.ReadMessagesJSON(exchangeRatesPath, func() *datav1.ExchangeRate { return &datav1.ExchangeRate{} })
-	if err != nil {
-		// No cache or read error — start fresh with just the new rates.
-		return newRates
-	}
-	// Build a map of all rates by date+currencies, starting with cached rates.
-	type rateKey struct {
-		date          string
-		baseCurrency  string
-		quoteCurrency string
-	}
-	rateMap := make(map[rateKey]*datav1.ExchangeRate, len(cachedRates)+len(newRates))
-	for _, rate := range cachedRates {
-		key := rateKey{
-			date:          exchangeRateDateString(rate),
-			baseCurrency:  rate.GetBaseCurrencyCode(),
-			quoteCurrency: rate.GetQuoteCurrencyCode(),
-		}
-		rateMap[key] = rate
-	}
-	// New rates overwrite cached rates with the same key.
-	for _, rate := range newRates {
-		key := rateKey{
-			date:          exchangeRateDateString(rate),
-			baseCurrency:  rate.GetBaseCurrencyCode(),
-			quoteCurrency: rate.GetQuoteCurrencyCode(),
-		}
-		rateMap[key] = rate
-	}
-	// Collect and sort for deterministic output.
-	merged := make([]*datav1.ExchangeRate, 0, len(rateMap))
-	for _, rate := range rateMap {
-		merged = append(merged, rate)
-	}
-	sort.Slice(merged, func(i, j int) bool {
-		return exchangeRateDateString(merged[i]) < exchangeRateDateString(merged[j])
-	})
-	d.logger.Info("merged exchange rates", "cached", len(cachedRates), "new", len(newRates), "merged", len(merged))
-	return merged
-}
-
 // tradeDateString returns a sortable date string from a trade's trade_date.
 func tradeDateString(trade *datav1.Trade) string {
 	if d := trade.GetTradeDate(); d != nil {
@@ -280,6 +228,242 @@ func exchangeRateDateString(rate *datav1.ExchangeRate) string {
 		return fmt.Sprintf("%04d-%02d-%02d", d.GetYear(), d.GetMonth(), d.GetDay())
 	}
 	return ""
+}
+
+// downloadFXRates eagerly downloads FX rates for all non-USD currencies found
+// across all data sources (Flex Query trades, seed transactions, Activity
+// Statement CSVs). Rates are stored per pair in fx/{BASE}.{QUOTE}/rates.json.
+// Only fetches rates for dates not already cached.
+func (d *downloader) downloadFXRates(ctx context.Context, flexQueryTrades []*datav1.Trade) error {
+	if err := os.MkdirAll(d.config.FXDirPath, 0o755); err != nil {
+		return fmt.Errorf("creating fx directory: %w", err)
+	}
+	// Collect all non-USD currencies and date range across ALL data sources:
+	// Flex Query trades, seed transactions, and Activity Statement CSVs.
+	currencies := make(map[string]bool)
+	var earliestDate, latestDate string
+	// Helper to track a currency and date from any data source.
+	trackCurrencyDate := func(currency string, dateStr string) {
+		if currency != "" && currency != "USD" {
+			currencies[currency] = true
+		}
+		if dateStr == "" {
+			return
+		}
+		if earliestDate == "" || dateStr < earliestDate {
+			earliestDate = dateStr
+		}
+		if latestDate == "" || dateStr > latestDate {
+			latestDate = dateStr
+		}
+	}
+	// Source 1: Flex Query trades (passed in from the download).
+	for _, trade := range flexQueryTrades {
+		trackCurrencyDate(trade.GetCurrencyCode(), tradeDateString(trade))
+	}
+	// Source 2: Seed transactions from previous brokers.
+	if d.config.SeedDirPath != "" {
+		for alias := range d.config.AccountAliases {
+			seedTxnPath := filepath.Join(d.config.SeedDirPath, alias, "transactions.json")
+			importedTxns, err := protoio.ReadMessagesJSON(seedTxnPath, func() *datav1.ImportedTransaction { return &datav1.ImportedTransaction{} })
+			if err != nil {
+				continue
+			}
+			for _, txn := range importedTxns {
+				dateStr := ""
+				if d := txn.GetDate(); d != nil {
+					dateStr = fmt.Sprintf("%04d-%02d-%02d", d.GetYear(), d.GetMonth(), d.GetDay())
+				}
+				trackCurrencyDate(txn.GetCurrencyCode(), dateStr)
+			}
+		}
+	}
+	// Source 3: Activity Statement CSV trades.
+	if d.config.ActivityStatementsDirPath != "" {
+		for alias := range d.config.AccountAliases {
+			csvDir := filepath.Join(d.config.ActivityStatementsDirPath, alias)
+			csvStatements, err := ibkractivitycsv.ParseDirectory(csvDir)
+			if err != nil {
+				continue
+			}
+			for _, statement := range csvStatements {
+				for i := range statement.Trades {
+					csvTrade := &statement.Trades[i]
+					dateStr := csvTrade.DateTime.Format("2006-01-02")
+					trackCurrencyDate(csvTrade.CurrencyCode, dateStr)
+				}
+			}
+		}
+	}
+	if len(currencies) == 0 || earliestDate == "" {
+		d.logger.Info("no non-USD currencies found in any data source, skipping FX rate download")
+		return nil
+	}
+	d.logger.Info("FX rate date range determined",
+		"earliest", earliestDate,
+		"latest", latestDate,
+		"currencies", fmt.Sprintf("%v", currencySet(currencies)),
+	)
+	// Use today's date as the end date for eager download.
+	today := time.Now().Format("2006-01-02")
+	if today > latestDate {
+		latestDate = today
+	}
+	// For each non-USD currency, download X→USD rates from frankfurter.dev.
+	// For each non-CAD currency (including USD), download X→CAD rates from Bank of Canada.
+	// The currency set always includes CAD (from FX trades), so we always get USD.CAD.
+	type pairSpec struct {
+		base     string
+		quote    string
+		provider string // "frankfurter" or "bankofcanada"
+	}
+	var pairs []pairSpec
+	for currency := range currencies {
+		if currency != "USD" {
+			// Non-USD, non-CAD currencies need X→USD from frankfurter.
+			pairs = append(pairs, pairSpec{base: currency, quote: "USD", provider: "frankfurter"})
+		}
+		if currency != "CAD" {
+			// Non-CAD currencies need X→CAD from Bank of Canada.
+			pairs = append(pairs, pairSpec{base: currency, quote: "CAD", provider: "bankofcanada"})
+		}
+	}
+	// Always download USD→CAD from Bank of Canada.
+	pairs = append(pairs, pairSpec{base: "USD", quote: "CAD", provider: "bankofcanada"})
+	// Fetch and write rates for each pair.
+	for _, pair := range pairs {
+		if err := d.downloadPairRates(ctx, pair.base, pair.quote, pair.provider, earliestDate, latestDate); err != nil {
+			d.logger.Warn("failed to download FX rates for pair",
+				"pair", pair.base+"."+pair.quote,
+				"provider", pair.provider,
+				"error", err,
+			)
+		}
+	}
+	return nil
+}
+
+// downloadPairRates downloads FX rates for a single currency pair from the
+// specified provider, merges with existing cached rates, and writes the result.
+// Only dates not already in the cache are fetched.
+func (d *downloader) downloadPairRates(ctx context.Context, base string, quote string, provider string, startDate string, endDate string) error {
+	pairKey := base + "." + quote
+	pairDir := filepath.Join(d.config.FXDirPath, pairKey)
+	if err := os.MkdirAll(pairDir, 0o755); err != nil {
+		return fmt.Errorf("creating pair directory: %w", err)
+	}
+	ratesPath := filepath.Join(pairDir, "rates.json")
+	// Load existing cached rates for this pair.
+	cachedRates, _ := protoio.ReadMessagesJSON(ratesPath, func() *datav1.ExchangeRate { return &datav1.ExchangeRate{} })
+	// Determine the date range covered by cached rates.
+	var cachedEarliest, cachedLatest string
+	for _, rate := range cachedRates {
+		dateStr := exchangeRateDateString(rate)
+		if cachedEarliest == "" || dateStr < cachedEarliest {
+			cachedEarliest = dateStr
+		}
+		if cachedLatest == "" || dateStr > cachedLatest {
+			cachedLatest = dateStr
+		}
+	}
+	// Skip the API call if cached rates already cover the requested range.
+	// The latest cached rate must be within 4 days of the end date to account
+	// for weekends and holidays when no rates are published.
+	if cachedEarliest != "" && cachedEarliest <= startDate && cachedLatest != "" {
+		latestCached, err := time.Parse("2006-01-02", cachedLatest)
+		endParsed, err2 := time.Parse("2006-01-02", endDate)
+		if err == nil && err2 == nil && endParsed.Sub(latestCached).Hours() <= 96 {
+			d.logger.Info("FX rates already cached", "pair", pairKey, "cached_range", cachedEarliest+".."+cachedLatest)
+			return nil
+		}
+	}
+	// Fetch rates from the appropriate provider for the full date range.
+	d.logger.Info("downloading FX rates", "pair", pairKey, "provider", provider, "start", startDate, "end", endDate)
+	// fetchedRates holds the structured daily rates from the API.
+	type dailyRate struct {
+		date string
+		rate *datav1.ExchangeRate
+	}
+	var fetchedRates []dailyRate
+	switch provider {
+	case "frankfurter":
+		rates, err := d.fxRateClient.GetRates(ctx, base, quote, startDate, endDate)
+		if err != nil {
+			return fmt.Errorf("fetching rates from frankfurter: %w", err)
+		}
+		for _, r := range rates {
+			parsedDate, err := time.Parse("2006-01-02", r.Date)
+			if err != nil {
+				continue
+			}
+			protoDate, err := timepb.NewProtoDate(parsedDate.Year(), parsedDate.Month(), parsedDate.Day())
+			if err != nil {
+				continue
+			}
+			fetchedRates = append(fetchedRates, dailyRate{
+				date: r.Date,
+				rate: &datav1.ExchangeRate{
+					Date:              protoDate,
+					BaseCurrencyCode:  base,
+					QuoteCurrencyCode: quote,
+					Rate:              r.Rate,
+					Provider:          provider,
+				},
+			})
+		}
+	case "bankofcanada":
+		rates, err := d.bocClient.GetRates(ctx, base, startDate, endDate)
+		if err != nil {
+			return fmt.Errorf("fetching rates from bankofcanada: %w", err)
+		}
+		for _, r := range rates {
+			parsedDate, err := time.Parse("2006-01-02", r.Date)
+			if err != nil {
+				continue
+			}
+			protoDate, err := timepb.NewProtoDate(parsedDate.Year(), parsedDate.Month(), parsedDate.Day())
+			if err != nil {
+				continue
+			}
+			fetchedRates = append(fetchedRates, dailyRate{
+				date: r.Date,
+				rate: &datav1.ExchangeRate{
+					Date:              protoDate,
+					BaseCurrencyCode:  base,
+					QuoteCurrencyCode: quote,
+					Rate:              r.Rate,
+					Provider:          provider,
+				},
+			})
+		}
+	default:
+		return fmt.Errorf("unknown provider: %s", provider)
+	}
+	// Merge fetched rates with cached rates (existing dates are not overwritten).
+	rateMap := make(map[string]*datav1.ExchangeRate, len(cachedRates)+len(fetchedRates))
+	for _, rate := range cachedRates {
+		rateMap[exchangeRateDateString(rate)] = rate
+	}
+	for _, fetched := range fetchedRates {
+		// Skip dates already in cache — cached data takes precedence.
+		if _, ok := rateMap[fetched.date]; ok {
+			continue
+		}
+		rateMap[fetched.date] = fetched.rate
+	}
+	// Collect, sort, and write.
+	merged := make([]*datav1.ExchangeRate, 0, len(rateMap))
+	for _, rate := range rateMap {
+		merged = append(merged, rate)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		return exchangeRateDateString(merged[i]) < exchangeRateDateString(merged[j])
+	})
+	if err := protoio.WriteMessagesJSON(ratesPath, merged); err != nil {
+		return fmt.Errorf("writing rates: %w", err)
+	}
+	d.logger.Info("FX rates written", "pair", pairKey, "cached", len(cachedRates), "fetched", len(fetchedRates), "total", len(merged))
+	return nil
 }
 
 // convertTrades converts XML trades to proto trades, setting the account alias.
@@ -348,142 +532,6 @@ func (d *downloader) convertCorporateActions(xmlActions []ibkrflexquery.XMLCorpo
 		actions = append(actions, action)
 	}
 	return actions, nil
-}
-
-// extractExchangeRates extracts FX rates from cash transactions.
-func (d *downloader) extractExchangeRates(cashTransactions []ibkrflexquery.XMLCashTransaction) []*datav1.ExchangeRate {
-	// Use a set to avoid duplicate rates for the same date/currency pair.
-	type rateKey struct {
-		date          string
-		baseCurrency  string
-		quoteCurrency string
-	}
-	seen := make(map[rateKey]bool)
-	var rates []*datav1.ExchangeRate
-	for _, ct := range cashTransactions {
-		if ct.FxRateToBase == "" || ct.FxRateToBase == "1" {
-			continue
-		}
-		// Parse the date from the dateTime field (format: YYYYMMDD or YYYYMMDD;HHMMSS).
-		dateStr := ct.DateTime
-		if len(dateStr) >= 8 {
-			dateStr = dateStr[:8]
-		}
-		parsedDate, err := parseIBKRDate(dateStr)
-		if err != nil {
-			continue
-		}
-		key := rateKey{
-			date:          dateStr,
-			baseCurrency:  ct.Currency,
-			quoteCurrency: "USD", // IBKR fxRateToBase is always to the base currency (USD).
-		}
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		protoDate, err := timepb.NewProtoDate(parsedDate.Year(), parsedDate.Month(), parsedDate.Day())
-		if err != nil {
-			continue
-		}
-		// Parse the FX rate string into a Decimal.
-		rate, err := mathpb.NewDecimal(ct.FxRateToBase)
-		if err != nil {
-			continue
-		}
-		rates = append(rates, &datav1.ExchangeRate{
-			Date:              protoDate,
-			BaseCurrencyCode:  ct.Currency,
-			QuoteCurrencyCode: "USD",
-			Rate:              rate,
-			Provider:          "ibkr",
-		})
-	}
-	// Sort by date for deterministic output.
-	sort.Slice(rates, func(i, j int) bool {
-		dateI := fmt.Sprintf("%04d-%02d-%02d", rates[i].GetDate().GetYear(), rates[i].GetDate().GetMonth(), rates[i].GetDate().GetDay())
-		dateJ := fmt.Sprintf("%04d-%02d-%02d", rates[j].GetDate().GetYear(), rates[j].GetDate().GetMonth(), rates[j].GetDate().GetDay())
-		return dateI < dateJ
-	})
-	return rates
-}
-
-// fetchMissingExchangeRates uses the frankfurter.dev API as a fallback for any dates
-// that have trades in non-USD currencies but no FX rate from IBKR.
-func (d *downloader) fetchMissingExchangeRates(ctx context.Context, existingRates []*datav1.ExchangeRate, trades []*datav1.Trade) error {
-	// Build set of existing rate dates.
-	type rateKey struct {
-		date     string
-		currency string
-	}
-	existingSet := make(map[rateKey]bool)
-	for _, rate := range existingRates {
-		dateStr := fmt.Sprintf("%04d-%02d-%02d", rate.GetDate().GetYear(), rate.GetDate().GetMonth(), rate.GetDate().GetDay())
-		existingSet[rateKey{date: dateStr, currency: rate.GetBaseCurrencyCode()}] = true
-	}
-	// Find trade dates with non-USD currencies that don't have FX rates.
-	missingDates := make(map[string]map[string]bool) // currency -> set of dates
-	for _, trade := range trades {
-		if trade.GetCurrencyCode() == "USD" {
-			continue
-		}
-		dateStr := fmt.Sprintf("%04d-%02d-%02d", trade.GetTradeDate().GetYear(), trade.GetTradeDate().GetMonth(), trade.GetTradeDate().GetDay())
-		key := rateKey{date: dateStr, currency: trade.GetCurrencyCode()}
-		if existingSet[key] {
-			continue
-		}
-		if missingDates[trade.GetCurrencyCode()] == nil {
-			missingDates[trade.GetCurrencyCode()] = make(map[string]bool)
-		}
-		missingDates[trade.GetCurrencyCode()][dateStr] = true
-	}
-	if len(missingDates) == 0 {
-		return nil
-	}
-	d.logger.Info("fetching missing exchange rates from frankfurter.dev")
-	// Fetch missing rates for each currency.
-	for currency, dates := range missingDates {
-		// Find the date range.
-		var sortedDates []string
-		for date := range dates {
-			sortedDates = append(sortedDates, date)
-		}
-		sort.Strings(sortedDates)
-		startDate := sortedDates[0]
-		endDate := sortedDates[len(sortedDates)-1]
-		// Fetch rates from the FX rate client.
-		rates, err := d.fxRateClient.GetRates(ctx, currency, "USD", startDate, endDate)
-		if err != nil {
-			return fmt.Errorf("fetching rates for %s: %w", currency, err)
-		}
-		// Add fetched rates to the existing rates.
-		for dateStr, rate := range rates {
-			if !dates[dateStr] {
-				continue
-			}
-			parsedDate, err := time.Parse("2006-01-02", dateStr)
-			if err != nil {
-				continue
-			}
-			protoDate, err := timepb.NewProtoDate(parsedDate.Year(), parsedDate.Month(), parsedDate.Day())
-			if err != nil {
-				continue
-			}
-			// Parse the FX rate string into a Decimal.
-			rateDecimal, err := mathpb.NewDecimal(rate)
-			if err != nil {
-				continue
-			}
-			existingRates = append(existingRates, &datav1.ExchangeRate{
-				Date:              protoDate,
-				BaseCurrencyCode:  currency,
-				QuoteCurrencyCode: "USD",
-				Rate:              rateDecimal,
-				Provider:          "frankfurter",
-			})
-		}
-	}
-	return nil
 }
 
 // xmlTradeToProto converts an XML trade from the Flex Query response to a proto Trade.
@@ -803,4 +851,14 @@ func parseCorporateActionType(s string) datav1.CorporateActionType {
 // parseIBKRDate parses an IBKR date string in YYYYMMDD format.
 func parseIBKRDate(s string) (time.Time, error) {
 	return time.Parse("20060102", s)
+}
+
+// currencySet converts a map[string]bool to a sorted slice for logging.
+func currencySet(m map[string]bool) []string {
+	var result []string
+	for k := range m {
+		result = append(result, k)
+	}
+	sort.Strings(result)
+	return result
 }

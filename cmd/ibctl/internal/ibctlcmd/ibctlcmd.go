@@ -11,6 +11,7 @@ import (
 	"buf.build/go/app/appext"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctldownload"
+	"github.com/bufdev/ibctl/internal/pkg/bankofcanada"
 	"github.com/bufdev/ibctl/internal/pkg/frankfurter"
 	"github.com/bufdev/ibctl/internal/pkg/ibkrflexquery"
 )
@@ -42,5 +43,6 @@ func NewDownloader(container appext.Container, configFilePath string) (ibctldown
 	// Construct the API clients.
 	flexQueryClient := ibkrflexquery.NewClient(logger)
 	fxRateClient := frankfurter.NewClient()
-	return ibctldownload.NewDownloader(logger, ibkrToken, dataDirV1Path, config, flexQueryClient, fxRateClient), nil
+	bocClient := bankofcanada.NewClient()
+	return ibctldownload.NewDownloader(logger, ibkrToken, dataDirV1Path, config, flexQueryClient, fxRateClient, bocClient), nil
 }

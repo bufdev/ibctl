@@ -13,6 +13,7 @@ import (
 	"buf.build/go/app/appext"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/ibctlcmd"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
+	"github.com/bufdev/ibctl/internal/ibctl/ibctlfxrates"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlholdings"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlmerge"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctltaxlot"
@@ -89,8 +90,10 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	if err != nil {
 		return err
 	}
+	// Load FX rates for USD price conversion. Returns an empty store if no data available.
+	fxStore := ibctlfxrates.NewStore(config.FXDirPath)
 	// Compute holdings via FIFO from all trade data, verified against IBKR positions.
-	result, err := ibctlholdings.GetHoldingsOverview(mergedData.Trades, mergedData.Positions, config)
+	result, err := ibctlholdings.GetHoldingsOverview(mergedData.Trades, mergedData.Positions, config, fxStore)
 	if err != nil {
 		return err
 	}

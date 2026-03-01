@@ -8,6 +8,7 @@ package ibctltaxlot
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -21,6 +22,11 @@ import (
 
 // microsFactor is the number of micros per unit.
 const microsFactor = 1_000_000
+
+// costBasisTolerancePct is the percentage threshold below which cost basis
+// discrepancies are suppressed. Small differences arise from rounding in
+// IBKR's consolidation of order executions vs our FIFO computation.
+const costBasisTolerancePct = 0.001
 
 // TaxLotResult contains the output of FIFO tax lot computation.
 type TaxLotResult struct {
@@ -354,16 +360,24 @@ func VerifyPositions(computed []*datav1.ComputedPosition, reported []*datav1.Pos
 				ReportedValue: mathpb.ToString(rep.GetQuantity()),
 			})
 		}
-		computedAvgPrice := moneypb.MoneyValueToString(comp.GetAverageCostBasisPrice())
-		reportedAvgPrice := moneypb.MoneyValueToString(rep.GetCostBasisPrice())
-		if computedAvgPrice != reportedAvgPrice {
-			discrepancies = append(discrepancies, PositionDiscrepancy{
-				AccountAlias:  key.accountAlias,
-				Symbol:        key.symbol,
-				Type:          DiscrepancyTypeCostBasis,
-				ComputedValue: computedAvgPrice,
-				ReportedValue: reportedAvgPrice,
-			})
+		// Compare cost basis prices numerically. Suppress discrepancies within
+		// 0.1% tolerance — small differences arise from rounding in IBKR's
+		// consolidation of order executions vs our FIFO computation.
+		computedCostMicros := moneypb.MoneyToMicros(comp.GetAverageCostBasisPrice())
+		reportedCostMicros := moneypb.MoneyToMicros(rep.GetCostBasisPrice())
+		if computedCostMicros != reportedCostMicros {
+			absDiff := math.Abs(float64(computedCostMicros - reportedCostMicros))
+			absReported := math.Abs(float64(reportedCostMicros))
+			// Report only if the difference exceeds the tolerance threshold.
+			if absReported == 0 || absDiff/absReported > costBasisTolerancePct {
+				discrepancies = append(discrepancies, PositionDiscrepancy{
+					AccountAlias:  key.accountAlias,
+					Symbol:        key.symbol,
+					Type:          DiscrepancyTypeCostBasis,
+					ComputedValue: moneypb.MoneyValueToString(comp.GetAverageCostBasisPrice()),
+					ReportedValue: moneypb.MoneyValueToString(rep.GetCostBasisPrice()),
+				})
+			}
 		}
 	}
 	// Check for positions reported by IBKR but not in computed.

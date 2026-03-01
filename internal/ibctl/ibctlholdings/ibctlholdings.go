@@ -15,6 +15,7 @@ import (
 	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
 	mathv1 "github.com/bufdev/ibctl/internal/gen/proto/go/standard/math/v1"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
+	"github.com/bufdev/ibctl/internal/ibctl/ibctlfxrates"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctltaxlot"
 	"github.com/bufdev/ibctl/internal/pkg/mathpb"
 	"github.com/bufdev/ibctl/internal/pkg/moneypb"
@@ -35,10 +36,16 @@ type HoldingsResult struct {
 type HoldingOverview struct {
 	// Symbol is the ticker symbol.
 	Symbol string `json:"symbol"`
-	// LastPrice is the most recent market price per share.
+	// Currency is the native currency of last price and average price (e.g., "USD", "CAD", "GBP").
+	Currency string `json:"currency"`
+	// LastPrice is the most recent market price per share in the native currency.
 	LastPrice string `json:"last_price"`
-	// AveragePrice is the weighted average cost basis price per share.
+	// AveragePrice is the weighted average cost basis price per share in the native currency.
 	AveragePrice string `json:"average_price"`
+	// LastPriceUSD is the last price converted to USD using the most recent FX rate.
+	LastPriceUSD string `json:"last_price_usd,omitempty"`
+	// AveragePriceUSD is the average cost basis price converted to USD.
+	AveragePriceUSD string `json:"average_price_usd,omitempty"`
 	// Position is the total quantity held.
 	Position *mathv1.Decimal `json:"position"`
 	// Category is the user-defined asset category (e.g., "EQUITY").
@@ -51,15 +58,18 @@ type HoldingOverview struct {
 
 // HoldingsOverviewHeaders returns the column headers for table/CSV output.
 func HoldingsOverviewHeaders() []string {
-	return []string{"SYMBOL", "LAST PRICE", "AVG PRICE", "POSITION", "CATEGORY", "TYPE", "SECTOR"}
+	return []string{"SYMBOL", "CURRENCY", "LAST PRICE", "AVG PRICE", "LAST USD", "AVG USD", "POSITION", "CATEGORY", "TYPE", "SECTOR"}
 }
 
 // HoldingOverviewToRow converts a HoldingOverview to a string slice for table/CSV output.
 func HoldingOverviewToRow(h *HoldingOverview) []string {
 	return []string{
 		h.Symbol,
+		h.Currency,
 		h.LastPrice,
 		h.AveragePrice,
+		h.LastPriceUSD,
+		h.AveragePriceUSD,
 		mathpb.ToString(h.Position),
 		h.Category,
 		h.Type,
@@ -70,25 +80,52 @@ func HoldingOverviewToRow(h *HoldingOverview) []string {
 // GetHoldingsOverview computes the holdings overview from trade data using FIFO,
 // then verifies against IBKR-reported positions.
 // The result is a combined view aggregated across all accounts.
+// The fxStore provides currency conversion for USD price columns.
 func GetHoldingsOverview(
 	trades []*datav1.Trade,
 	positions []*datav1.Position,
 	config *ibctlconfig.Config,
+	fxStore *ibctlfxrates.Store,
 ) (*HoldingsResult, error) {
-	// Compute FIFO tax lots from all trades (seed + CSV + Flex Query).
-	taxLotResult, err := ibctltaxlot.ComputeTaxLots(trades)
+	// Filter out CASH asset category trades (FX conversions like USD.CAD).
+	// These are currency exchanges, not security trades.
+	var securityTrades []*datav1.Trade
+	for _, trade := range trades {
+		if trade.GetAssetCategory() == "CASH" {
+			continue
+		}
+		securityTrades = append(securityTrades, trade)
+	}
+	// Compute FIFO tax lots from all security trades (seed + CSV + Flex Query).
+	taxLotResult, err := ibctltaxlot.ComputeTaxLots(securityTrades)
 	if err != nil {
 		return nil, err
 	}
 	// Compute per-account positions from tax lots.
 	computedPositions := ibctltaxlot.ComputePositions(taxLotResult.TaxLots)
-	// Verify per-account computed positions against IBKR-reported positions.
-	discrepancies := ibctltaxlot.VerifyPositions(computedPositions, positions)
-
-	// Build a map of market prices from IBKR-reported positions.
-	marketPrices := make(map[string]string, len(positions))
+	// Filter out CASH positions from IBKR-reported data before verification.
+	var securityPositions []*datav1.Position
 	for _, pos := range positions {
-		marketPrices[pos.GetSymbol()] = moneypb.MoneyValueToString(pos.GetMarketPrice())
+		if pos.GetAssetCategory() == "CASH" {
+			continue
+		}
+		securityPositions = append(securityPositions, pos)
+	}
+	// Verify per-account computed positions against IBKR-reported positions.
+	discrepancies := ibctltaxlot.VerifyPositions(computedPositions, securityPositions)
+
+	// Build a map of market prices from IBKR-reported security positions.
+	// Stores both the display string and the position proto for FX conversion.
+	type marketPriceData struct {
+		displayValue string
+		money        *datav1.Position
+	}
+	marketPrices := make(map[string]marketPriceData, len(securityPositions))
+	for _, pos := range securityPositions {
+		marketPrices[pos.GetSymbol()] = marketPriceData{
+			displayValue: moneypb.MoneyValueToString(pos.GetMarketPrice()),
+			money:        pos,
+		}
 	}
 
 	// Aggregate computed positions across accounts for combined display.
@@ -130,11 +167,25 @@ func GetHoldingsOverview(
 		} else {
 			avgCostMicros = data.totalCostMicros * 1_000_000 / data.quantityMicros
 		}
+		priceData := marketPrices[symbol]
+		avgCostMoney := moneypb.MoneyFromMicros(data.currencyCode, avgCostMicros)
 		holding := &HoldingOverview{
 			Symbol:       symbol,
-			LastPrice:    marketPrices[symbol],
-			AveragePrice: moneypb.MoneyValueToString(moneypb.MoneyFromMicros(data.currencyCode, avgCostMicros)),
+			Currency:     data.currencyCode,
+			LastPrice:    priceData.displayValue,
+			AveragePrice: moneypb.MoneyValueToString(avgCostMoney),
 			Position:     mathpb.FromMicros(data.quantityMicros),
+		}
+		// Convert prices to USD using the most recent FX rate.
+		if fxStore != nil {
+			if priceData.money != nil {
+				if usdMoney, ok := fxStore.ConvertToUSD(priceData.money.GetMarketPrice()); ok {
+					holding.LastPriceUSD = moneypb.MoneyValueToString(usdMoney)
+				}
+			}
+			if usdMoney, ok := fxStore.ConvertToUSD(avgCostMoney); ok {
+				holding.AveragePriceUSD = moneypb.MoneyValueToString(usdMoney)
+			}
 		}
 		// Merge symbol classification from config.
 		if symbolConfig, ok := config.SymbolConfigs[symbol]; ok {
