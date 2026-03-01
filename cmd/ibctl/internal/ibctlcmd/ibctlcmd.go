@@ -17,17 +17,17 @@ import (
 )
 
 const (
-	// ConfigFlagName is the flag name for the configuration file path.
-	ConfigFlagName = "config"
+	// DirFlagName is the flag name for the base directory path.
+	DirFlagName = "dir"
 	// ibkrFlexWebServiceTokenEnvVar is the environment variable name for the IBKR Flex Web Service token.
 	ibkrFlexWebServiceTokenEnvVar = "IBKR_FLEX_WEB_SERVICE_TOKEN"
 )
 
-// NewDownloader constructs a Downloader by reading the config file, extracting the
-// IBKR token from the environment, and creating the required API clients.
-func NewDownloader(container appext.Container, configFilePath string) (ibctldownload.Downloader, error) {
-	// Read and validate the configuration file.
-	config, err := ibctlconfig.ReadConfig(configFilePath)
+// NewDownloader constructs a Downloader by reading the config from the base directory,
+// extracting the IBKR token from the environment, and creating the required API clients.
+func NewDownloader(container appext.Container, dirPath string) (ibctldownload.Downloader, error) {
+	// Read and validate the configuration file from the base directory.
+	config, err := ibctlconfig.ReadConfig(dirPath)
 	if err != nil {
 		return nil, err
 	}

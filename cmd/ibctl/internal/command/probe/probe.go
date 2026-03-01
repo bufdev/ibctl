@@ -51,8 +51,8 @@ With --from/--to (YYYYMMDD format), overrides the period to test specific date r
 }
 
 type flags struct {
-	// Config is the path to the configuration file.
-	Config string
+	// Dir is the ibctl directory containing ibctl.yaml.
+	Dir string
 	// From is the start date (YYYYMMDD).
 	From string
 	// To is the end date (YYYYMMDD).
@@ -65,7 +65,7 @@ func newFlags() *flags {
 
 // Bind registers the flag definitions with the given flag set.
 func (f *flags) Bind(flagSet *pflag.FlagSet) {
-	flagSet.StringVar(&f.Config, ibctlcmd.ConfigFlagName, ibctlconfig.DefaultConfigFileName, "The configuration file path")
+	flagSet.StringVar(&f.Dir, ibctlcmd.DirFlagName, ".", "The ibctl directory containing ibctl.yaml")
 	flagSet.StringVar(&f.From, fromFlagName, "", "Start date (YYYYMMDD)")
 	flagSet.StringVar(&f.To, toFlagName, "", "End date (YYYYMMDD)")
 }
@@ -89,7 +89,7 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 		}
 	}
 	// Read config for the query ID.
-	config, err := ibctlconfig.ReadConfig(flags.Config)
+	config, err := ibctlconfig.ReadConfig(flags.Dir)
 	if err != nil {
 		return err
 	}

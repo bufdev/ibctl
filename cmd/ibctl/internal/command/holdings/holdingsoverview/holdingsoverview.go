@@ -26,6 +26,9 @@ import (
 // formatFlagName is the flag name for the output format.
 const formatFlagName = "format"
 
+// cachedFlagName is the flag name for skipping download and using cached data only.
+const cachedFlagName = "cached"
+
 // NewCommand returns a new holdings overview command.
 func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 	flags := newFlags()
@@ -42,12 +45,9 @@ func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 	}
 }
 
-// cachedFlagName is the flag name for skipping download and using cached data only.
-const cachedFlagName = "cached"
-
 type flags struct {
-	// Config is the path to the configuration file.
-	Config string
+	// Dir is the base directory containing ibctl.yaml and data subdirectories.
+	Dir string
 	// Format is the output format (table, csv, json).
 	Format string
 	// Cached skips downloading and uses only cached data.
@@ -60,7 +60,7 @@ func newFlags() *flags {
 
 // Bind registers the flag definitions with the given flag set.
 func (f *flags) Bind(flagSet *pflag.FlagSet) {
-	flagSet.StringVar(&f.Config, ibctlcmd.ConfigFlagName, ibctlconfig.DefaultConfigFileName, "The configuration file path")
+	flagSet.StringVar(&f.Dir, ibctlcmd.DirFlagName, ".", "The ibctl directory containing ibctl.yaml")
 	flagSet.StringVar(&f.Format, formatFlagName, "table", "Output format (table, csv, json)")
 	flagSet.BoolVar(&f.Cached, cachedFlagName, false, "Skip downloading and use only cached data")
 }
@@ -70,14 +70,14 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	if err != nil {
 		return appcmd.NewInvalidArgumentError(err.Error())
 	}
-	// Read and validate the configuration file.
-	config, err := ibctlconfig.ReadConfig(flags.Config)
+	// Read and validate the configuration file from the base directory.
+	config, err := ibctlconfig.ReadConfig(flags.Dir)
 	if err != nil {
 		return err
 	}
 	// Download fresh data unless --cached is set.
 	if !flags.Cached {
-		downloader, err := ibctlcmd.NewDownloader(container, flags.Config)
+		downloader, err := ibctlcmd.NewDownloader(container, flags.Dir)
 		if err != nil {
 			return err
 		}
@@ -86,19 +86,19 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 		}
 	}
 	// Merge seed lots + Activity Statement CSVs + Flex Query cached data across all accounts.
-	// Trades come from data_dir (persistent), snapshots from cache_dir (blow-away safe).
+	// Trades come from data/ (persistent), snapshots from cache/ (blow-away safe).
 	mergedData, err := ibctlmerge.Merge(
-		ibctlpath.DataAccountsDirPath(config.DataDirPath),
-		ibctlpath.CacheAccountsDirPath(config.CacheDirPath),
-		config.ActivityStatementsDirPath,
-		config.SeedDirPath,
+		ibctlpath.DataAccountsDirPath(config.DirPath),
+		ibctlpath.CacheAccountsDirPath(config.DirPath),
+		ibctlpath.ActivityStatementsDirPath(config.DirPath),
+		ibctlpath.SeedDirPath(config.DirPath),
 		config.AccountAliases,
 	)
 	if err != nil {
 		return err
 	}
 	// Load FX rates for USD price conversion. Returns an empty store if no data available.
-	fxStore := ibctlfxrates.NewStore(ibctlpath.CacheFXDirPath(config.CacheDirPath))
+	fxStore := ibctlfxrates.NewStore(ibctlpath.CacheFXDirPath(config.DirPath))
 	// Compute holdings via FIFO from all trade data, verified against IBKR positions.
 	result, err := ibctlholdings.GetHoldingsOverview(mergedData.Trades, mergedData.Positions, mergedData.CashPositions, config, fxStore)
 	if err != nil {

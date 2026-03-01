@@ -71,11 +71,11 @@ type downloader struct {
 }
 
 func (d *downloader) Download(ctx context.Context) error {
-	// Compute directory paths from config. Trades go to data_dir (persistent),
-	// everything else goes to cache_dir (blow-away safe).
-	dataAccountsDir := ibctlpath.DataAccountsDirPath(d.config.DataDirPath)
-	cacheAccountsDir := ibctlpath.CacheAccountsDirPath(d.config.CacheDirPath)
-	cacheFXDir := ibctlpath.CacheFXDirPath(d.config.CacheDirPath)
+	// Compute directory paths from the base directory. Trades go to data/ (persistent),
+	// everything else goes to cache/ (blow-away safe).
+	dataAccountsDir := ibctlpath.DataAccountsDirPath(d.config.DirPath)
+	cacheAccountsDir := ibctlpath.CacheAccountsDirPath(d.config.DirPath)
+	cacheFXDir := ibctlpath.CacheFXDirPath(d.config.DirPath)
 	// Create the directory structure.
 	if err := os.MkdirAll(dataAccountsDir, 0o755); err != nil {
 		return fmt.Errorf("creating data accounts directory: %w", err)
@@ -281,9 +281,10 @@ func (d *downloader) downloadFXRates(ctx context.Context, fxDirPath string, flex
 		trackCurrencyDate(trade.GetCurrencyCode(), tradeDateString(trade))
 	}
 	// Source 2: Seed transactions from previous brokers.
-	if d.config.SeedDirPath != "" {
+	seedDirPath := ibctlpath.SeedDirPath(d.config.DirPath)
+	if _, err := os.Stat(seedDirPath); err == nil {
 		for alias := range d.config.AccountAliases {
-			seedTxnPath := filepath.Join(d.config.SeedDirPath, alias, "transactions.json")
+			seedTxnPath := filepath.Join(seedDirPath, alias, "transactions.json")
 			importedTxns, err := protoio.ReadMessagesJSON(seedTxnPath, func() *datav1.ImportedTransaction { return &datav1.ImportedTransaction{} })
 			if err != nil {
 				continue
@@ -298,9 +299,10 @@ func (d *downloader) downloadFXRates(ctx context.Context, fxDirPath string, flex
 		}
 	}
 	// Source 3: Activity Statement CSV trades.
-	if d.config.ActivityStatementsDirPath != "" {
+	activityStatementsDirPath := ibctlpath.ActivityStatementsDirPath(d.config.DirPath)
+	if _, err := os.Stat(activityStatementsDirPath); err == nil {
 		for alias := range d.config.AccountAliases {
-			csvDir := filepath.Join(d.config.ActivityStatementsDirPath, alias)
+			csvDir := filepath.Join(activityStatementsDirPath, alias)
 			csvStatements, err := ibkractivitycsv.ParseDirectory(csvDir)
 			if err != nil {
 				continue

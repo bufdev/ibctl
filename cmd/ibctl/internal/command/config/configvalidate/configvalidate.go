@@ -32,8 +32,8 @@ func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 }
 
 type flags struct {
-	// Config is the path to the configuration file.
-	Config string
+	// Dir is the ibctl directory containing ibctl.yaml.
+	Dir string
 }
 
 func newFlags() *flags {
@@ -42,9 +42,9 @@ func newFlags() *flags {
 
 // Bind registers the flag definitions with the given flag set.
 func (f *flags) Bind(flagSet *pflag.FlagSet) {
-	flagSet.StringVar(&f.Config, ibctlcmd.ConfigFlagName, ibctlconfig.DefaultConfigFileName, "The configuration file path")
+	flagSet.StringVar(&f.Dir, ibctlcmd.DirFlagName, ".", "The ibctl directory containing ibctl.yaml")
 }
 
 func run(_ context.Context, _ appext.Container, flags *flags) error {
-	return ibctlconfig.ValidateConfig(flags.Config)
+	return ibctlconfig.ValidateConfig(flags.Dir)
 }

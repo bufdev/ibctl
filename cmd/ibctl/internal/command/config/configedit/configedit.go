@@ -16,6 +16,7 @@ import (
 	"buf.build/go/app/appext"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/ibctlcmd"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
+	"github.com/bufdev/ibctl/internal/ibctl/ibctlpath"
 	"github.com/spf13/pflag"
 )
 
@@ -36,8 +37,8 @@ func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 }
 
 type flags struct {
-	// Config is the path to the configuration file.
-	Config string
+	// Dir is the ibctl directory containing ibctl.yaml.
+	Dir string
 }
 
 func newFlags() *flags {
@@ -46,13 +47,15 @@ func newFlags() *flags {
 
 // Bind registers the flag definitions with the given flag set.
 func (f *flags) Bind(flagSet *pflag.FlagSet) {
-	flagSet.StringVar(&f.Config, ibctlcmd.ConfigFlagName, ibctlconfig.DefaultConfigFileName, "The configuration file path")
+	flagSet.StringVar(&f.Dir, ibctlcmd.DirFlagName, ".", "The ibctl directory containing ibctl.yaml")
 }
 
 func run(ctx context.Context, container appext.Container, flags *flags) error {
+	// Resolve the config file path from the base directory.
+	configFilePath := ibctlpath.ConfigFilePath(flags.Dir)
 	// Create the configuration file with the default template if it does not exist.
-	if _, err := os.Stat(flags.Config); os.IsNotExist(err) {
-		if err := ibctlconfig.InitConfig(flags.Config); err != nil {
+	if _, err := os.Stat(configFilePath); os.IsNotExist(err) {
+		if err := ibctlconfig.InitConfig(flags.Dir); err != nil {
 			return err
 		}
 	}
@@ -62,7 +65,7 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 		return errors.New("EDITOR environment variable is not set")
 	}
 	// Open the configuration file in the editor.
-	cmd := exec.CommandContext(ctx, editor, flags.Config)
+	cmd := exec.CommandContext(ctx, editor, configFilePath)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -70,6 +73,6 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 		return fmt.Errorf("running editor: %w", err)
 	}
 	// Print the path of the edited file.
-	_, err := fmt.Fprintf(container.Stdout(), "%s\n", flags.Config)
+	_, err := fmt.Fprintf(container.Stdout(), "%s\n", configFilePath)
 	return err
 }

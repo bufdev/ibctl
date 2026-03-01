@@ -13,12 +13,9 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"github.com/bufdev/ibctl/internal/standard/xos"
+	"github.com/bufdev/ibctl/internal/ibctl/ibctlpath"
 	"gopkg.in/yaml.v3"
 )
-
-// DefaultConfigFileName is the default configuration file name in the current directory.
-const DefaultConfigFileName = "ibctl.yaml"
 
 // validAliasPattern matches lowercase alphanumeric strings with hyphens, used for account aliases.
 var validAliasPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
@@ -29,16 +26,6 @@ const configTemplate = `# The configuration file version.
 #
 # Required. The only current valid version is v1.
 version: v1
-# The data directory for persistent trade data that accumulates over time.
-#
-# Required. Only contains trades.json per account, which is incrementally
-# merged across downloads. Cannot be safely deleted without losing history
-# beyond the 365-day API window.
-data_dir: ~/Documents/ibkr/data
-# The cache directory for downloaded snapshots (positions, FX rates, etc.).
-#
-# Required. Safe to delete — fully re-populated on the next download.
-cache_dir: ~/Documents/ibkr/cache
 # The Flex Query ID (visible next to your query name in the IBKR portal).
 #
 # Required. Create a Flex Query at https://www.interactivebrokers.com
@@ -55,16 +42,6 @@ flex_query_id: ""
 # Aliases must be lowercase alphanumeric with hyphens (e.g., "rrsp", "hold-co").
 accounts:
   # my-account: "U1234567"
-# Directory containing IBKR Activity Statement CSVs for historical data.
-#
-# Required. Organize by account subdirectory (e.g., ~/Documents/ibkr-statements/my-account/).
-# ibctl reads all *.csv files recursively. See README for setup instructions.
-activity_statements_dir: ~/Documents/ibkr-statements
-# Permanent seed data directory for pre-transfer tax lots from previous brokers.
-#
-# Optional. Organized by account subdirectory (e.g., seed_dir/individual/lots.json).
-# This data is manually curated and must not be deleted.
-# seed_dir: ~/Documents/ibkr/seed
 # Symbol classification configuration.
 #
 # Optional. Adds category, type, sector, and geo metadata to holdings output.
@@ -80,19 +57,8 @@ activity_statements_dir: ~/Documents/ibkr-statements
 type ExternalConfigV1 struct {
 	// Version is the configuration file version (must be "v1").
 	Version string `yaml:"version"`
-	// DataDir is the directory for persistent trade data that accumulates over time.
-	DataDir string `yaml:"data_dir"`
-	// CacheDir is the directory for downloaded snapshots (positions, FX rates, etc.).
-	// Safe to delete — fully re-populated on the next download.
-	CacheDir string `yaml:"cache_dir"`
 	// FlexQueryID is the Flex Query ID.
 	FlexQueryID string `yaml:"flex_query_id"`
-	// ActivityStatementsDir is the directory containing IBKR Activity Statement CSVs.
-	ActivityStatementsDir string `yaml:"activity_statements_dir"`
-	// SeedDir is the permanent seed data directory for pre-transfer tax lots.
-	// Organized by account subdirectory (e.g., seed_dir/individual/lots.json).
-	// This data is manually curated and must not be deleted.
-	SeedDir string `yaml:"seed_dir"`
 	// Accounts maps user-chosen aliases to IBKR account IDs.
 	Accounts map[string]string `yaml:"accounts"`
 	// Symbols is the optional list of symbol classifications.
@@ -115,17 +81,11 @@ type ExternalSymbolConfigV1 struct {
 
 // Config is the validated runtime configuration derived from the config file.
 type Config struct {
-	// DataDirPath is the resolved data directory path for persistent trade data.
-	DataDirPath string
-	// CacheDirPath is the resolved cache directory path for downloaded snapshots.
-	CacheDirPath string
+	// DirPath is the resolved base directory path (from --dir flag).
+	// All subdirectory paths are derived from this via ibctlpath.
+	DirPath string
 	// IBKRFlexQueryID is the Flex Query ID.
 	IBKRFlexQueryID string
-	// ActivityStatementsDirPath is the resolved path to the Activity Statements directory.
-	ActivityStatementsDirPath string
-	// SeedDirPath is the resolved path to the permanent seed data directory.
-	// Empty if not configured.
-	SeedDirPath string
 	// AccountAliases maps account aliases to IBKR account IDs (e.g., "rrsp" → "U1234567").
 	AccountAliases map[string]string
 	// AccountIDToAlias maps IBKR account IDs to aliases (e.g., "U1234567" → "rrsp").
@@ -147,21 +107,13 @@ type SymbolConfig struct {
 }
 
 // NewConfigV1 validates an ExternalConfigV1 and returns a runtime Config.
-func NewConfigV1(externalConfig ExternalConfigV1) (*Config, error) {
+// The dirPath is the resolved base directory (from --dir flag).
+func NewConfigV1(externalConfig ExternalConfigV1, dirPath string) (*Config, error) {
 	if externalConfig.Version != "v1" {
 		return nil, fmt.Errorf("unsupported config version %q, must be v1", externalConfig.Version)
 	}
-	if externalConfig.DataDir == "" {
-		return nil, errors.New("data_dir is required")
-	}
-	if externalConfig.CacheDir == "" {
-		return nil, errors.New("cache_dir is required")
-	}
 	if externalConfig.FlexQueryID == "" {
 		return nil, errors.New("flex_query_id is required")
-	}
-	if externalConfig.ActivityStatementsDir == "" {
-		return nil, errors.New("activity_statements_dir is required")
 	}
 	if len(externalConfig.Accounts) == 0 {
 		return nil, errors.New("accounts is required, must have at least one account alias mapping")
@@ -182,29 +134,6 @@ func NewConfigV1(externalConfig ExternalConfigV1) (*Config, error) {
 		accountAliases[alias] = accountID
 		accountIDToAlias[accountID] = alias
 	}
-	// Resolve the data directory path.
-	dataDirPath, err := xos.ExpandHome(externalConfig.DataDir)
-	if err != nil {
-		return nil, err
-	}
-	// Resolve the cache directory path.
-	cacheDirPath, err := xos.ExpandHome(externalConfig.CacheDir)
-	if err != nil {
-		return nil, err
-	}
-	// Resolve the activity statements directory path.
-	activityStatementsDirPath, err := xos.ExpandHome(externalConfig.ActivityStatementsDir)
-	if err != nil {
-		return nil, err
-	}
-	// Resolve the seed data directory path if configured.
-	var seedDirPath string
-	if externalConfig.SeedDir != "" {
-		seedDirPath, err = xos.ExpandHome(externalConfig.SeedDir)
-		if err != nil {
-			return nil, err
-		}
-	}
 	// Build symbol configs map, checking for duplicates.
 	symbolConfigs := make(map[string]SymbolConfig, len(externalConfig.Symbols))
 	for _, s := range externalConfig.Symbols {
@@ -222,58 +151,62 @@ func NewConfigV1(externalConfig ExternalConfigV1) (*Config, error) {
 		}
 	}
 	return &Config{
-		DataDirPath:               dataDirPath,
-		CacheDirPath:              cacheDirPath,
-		IBKRFlexQueryID:           externalConfig.FlexQueryID,
-		ActivityStatementsDirPath: activityStatementsDirPath,
-		SeedDirPath:               seedDirPath,
-		AccountAliases:            accountAliases,
-		AccountIDToAlias:          accountIDToAlias,
-		SymbolConfigs:             symbolConfigs,
+		DirPath:          dirPath,
+		IBKRFlexQueryID:  externalConfig.FlexQueryID,
+		AccountAliases:   accountAliases,
+		AccountIDToAlias: accountIDToAlias,
+		SymbolConfigs:    symbolConfigs,
 	}, nil
 }
 
-// ReadConfig reads and validates a configuration file at the given path.
-// Returns a clear error message directing users to run "ibctl config init" if the file is missing.
-func ReadConfig(filePath string) (*Config, error) {
-	data, err := os.ReadFile(filePath)
+// ReadConfig reads and validates the configuration file from the base directory.
+// The dirPath is the base directory containing ibctl.yaml.
+func ReadConfig(dirPath string) (*Config, error) {
+	// Resolve to absolute path for consistent behavior.
+	absDirPath, err := filepath.Abs(dirPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving directory path: %w", err)
+	}
+	configFilePath := ibctlpath.ConfigFilePath(absDirPath)
+	data, err := os.ReadFile(configFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("configuration file not found at %s, run \"ibctl config init\" to create one", filePath)
+			return nil, fmt.Errorf("configuration file not found at %s, run \"ibctl config init\" to create one", configFilePath)
 		}
 		return nil, fmt.Errorf("reading config file: %w", err)
 	}
 	var externalConfig ExternalConfigV1
 	if err := unmarshalYAMLStrict(data, &externalConfig); err != nil {
-		return nil, fmt.Errorf("parsing config file %s: %w", filePath, err)
+		return nil, fmt.Errorf("parsing config file %s: %w", configFilePath, err)
 	}
-	config, err := NewConfigV1(externalConfig)
+	config, err := NewConfigV1(externalConfig, absDirPath)
 	if err != nil {
-		return nil, fmt.Errorf("invalid configuration in %s: %w", filePath, err)
+		return nil, fmt.Errorf("invalid configuration in %s: %w", configFilePath, err)
 	}
 	return config, nil
 }
 
-// InitConfig creates a new configuration file with a documented template at the given path.
+// InitConfig creates a new configuration file with a documented template in the base directory.
 // Returns an error if the file already exists.
-func InitConfig(filePath string) error {
-	if _, err := os.Stat(filePath); err == nil {
-		return fmt.Errorf("configuration file already exists: %s", filePath)
+func InitConfig(dirPath string) error {
+	configFilePath := ibctlpath.ConfigFilePath(dirPath)
+	if _, err := os.Stat(configFilePath); err == nil {
+		return fmt.Errorf("configuration file already exists: %s", configFilePath)
 	}
-	// Create parent directories if they don't exist.
-	if dir := filepath.Dir(filePath); dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("creating directory: %w", err)
-		}
+	// Create the directory if it doesn't exist.
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
+		return fmt.Errorf("creating directory: %w", err)
 	}
-	return os.WriteFile(filePath, []byte(configTemplate), 0o644)
+	return os.WriteFile(configFilePath, []byte(configTemplate), 0o644)
 }
 
-// ValidateConfig reads and validates a configuration file at the given path.
-func ValidateConfig(filePath string) error {
-	_, err := ReadConfig(filePath)
+// ValidateConfig reads and validates the configuration file in the base directory.
+func ValidateConfig(dirPath string) error {
+	_, err := ReadConfig(dirPath)
 	return err
 }
+
+// *** PRIVATE ***
 
 // unmarshalYAMLStrict unmarshals the data as YAML with strict field checking.
 // If the data length is 0, this is a no-op.

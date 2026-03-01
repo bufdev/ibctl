@@ -11,7 +11,6 @@ import (
 	"buf.build/go/app/appcmd"
 	"buf.build/go/app/appext"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/ibctlcmd"
-	"github.com/bufdev/ibctl/internal/ibctl/ibctlconfig"
 	"github.com/spf13/pflag"
 )
 
@@ -32,8 +31,8 @@ func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 }
 
 type flags struct {
-	// Config is the path to the configuration file.
-	Config string
+	// Dir is the ibctl directory containing ibctl.yaml.
+	Dir string
 }
 
 func newFlags() *flags {
@@ -42,12 +41,12 @@ func newFlags() *flags {
 
 // Bind registers the flag definitions with the given flag set.
 func (f *flags) Bind(flagSet *pflag.FlagSet) {
-	flagSet.StringVar(&f.Config, ibctlcmd.ConfigFlagName, ibctlconfig.DefaultConfigFileName, "The configuration file path")
+	flagSet.StringVar(&f.Dir, ibctlcmd.DirFlagName, ".", "The ibctl directory containing ibctl.yaml")
 }
 
 func run(ctx context.Context, container appext.Container, flags *flags) error {
 	// Construct the downloader using shared command wiring.
-	downloader, err := ibctlcmd.NewDownloader(container, flags.Config)
+	downloader, err := ibctlcmd.NewDownloader(container, flags.Dir)
 	if err != nil {
 		return err
 	}
