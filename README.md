@@ -1,5 +1,9 @@
 # ibctl
 
+## TODO:
+
+- other manual things other than just cash adjustments, and a list of them
+
 A CLI tool for analyzing Interactive Brokers (IBKR) holdings and trades. Downloads data via the IBKR Flex Query API, computes FIFO tax lots, and displays holdings with prices, positions, and USD conversions. Supports multiple IBKR accounts.
 
 ## Prerequisites

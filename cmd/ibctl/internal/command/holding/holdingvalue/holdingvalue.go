@@ -2,11 +2,13 @@
 //
 // All rights reserved.
 
-// Package lotlist implements the "holding lot list" command.
-package lotlist
+// Package holdingvalue implements the "holding value" command.
+package holdingvalue
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"os"
 
 	"buf.build/go/app/appcmd"
@@ -18,24 +20,19 @@ import (
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlmerge"
 	"github.com/bufdev/ibctl/internal/ibctl/ibctlpath"
 	"github.com/bufdev/ibctl/internal/pkg/cliio"
+	"github.com/bufdev/ibctl/internal/pkg/mathpb"
 	"github.com/spf13/pflag"
 )
 
-const (
-	// formatFlagName is the flag name for the output format.
-	formatFlagName = "format"
-	// downloadFlagName is the flag name for downloading fresh data before displaying.
-	downloadFlagName = "download"
-	// symbolFlagName is the flag name for filtering by symbol.
-	symbolFlagName = "symbol"
-)
+// downloadFlagName is the flag name for downloading fresh data before displaying.
+const downloadFlagName = "download"
 
-// NewCommand returns a new lot list command.
+// NewCommand returns a new holding value command.
 func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 	flags := newFlags()
 	return &appcmd.Command{
 		Use:   name,
-		Short: "List individual tax lots, optionally filtered by symbol",
+		Short: "Display portfolio value with estimated tax impact",
 		Args:  appcmd.NoArgs,
 		Run: builder.NewRunFunc(
 			func(ctx context.Context, container appext.Container) error {
@@ -49,12 +46,8 @@ func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 type flags struct {
 	// Dir is the base directory containing ibctl.yaml and data subdirectories.
 	Dir string
-	// Format is the output format (table, csv, json).
-	Format string
 	// Download fetches fresh data before displaying.
 	Download bool
-	// Symbol filters lots to a specific symbol. Empty means all symbols.
-	Symbol string
 }
 
 func newFlags() *flags {
@@ -64,16 +57,10 @@ func newFlags() *flags {
 // Bind registers the flag definitions with the given flag set.
 func (f *flags) Bind(flagSet *pflag.FlagSet) {
 	flagSet.StringVar(&f.Dir, ibctlcmd.DirFlagName, ".", "The ibctl directory containing ibctl.yaml")
-	flagSet.StringVar(&f.Format, formatFlagName, "table", "Output format (table, csv, json)")
 	flagSet.BoolVar(&f.Download, downloadFlagName, false, "Download fresh data before displaying")
-	flagSet.StringVar(&f.Symbol, symbolFlagName, "", "Filter by symbol (omit for all symbols)")
 }
 
 func run(ctx context.Context, container appext.Container, flags *flags) error {
-	format, err := cliio.ParseFormat(flags.Format)
-	if err != nil {
-		return appcmd.NewInvalidArgumentError(err.Error())
-	}
 	// Read and validate the configuration file from the base directory.
 	config, err := ibctlconfig.ReadConfig(flags.Dir)
 	if err != nil {
@@ -102,40 +89,34 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	}
 	// Load FX rates for USD conversion.
 	fxStore := ibctlfxrates.NewStore(ibctlpath.CacheFXDirPath(config.DirPath))
-	// Get the lot list, optionally filtered by symbol.
-	result, err := ibctlholdings.GetLotList(flags.Symbol, mergedData.Trades, mergedData.Positions, fxStore)
+	// Compute holdings via FIFO from all trade data.
+	result, err := ibctlholdings.GetHoldingsOverview(mergedData.Trades, mergedData.Positions, mergedData.CashPositions, config, fxStore)
 	if err != nil {
 		return err
 	}
-	// Write output in the requested format.
-	writer := os.Stdout
-	switch format {
-	case cliio.FormatTable:
-		headers := ibctlholdings.LotListHeaders()
-		rows := make([][]string, 0, len(result.Lots))
-		for _, l := range result.Lots {
-			rows = append(rows, ibctlholdings.LotOverviewToTableRow(l))
-		}
-		// Build totals row.
-		totals := ibctlholdings.ComputeLotTotals(result.Lots)
-		totalsRow := make([]string, len(headers))
-		totalsRow[0] = "TOTAL"
-		totalsRow[9] = totals.PnLUSD
-		totalsRow[10] = totals.STCGUSD
-		totalsRow[11] = totals.LTCGUSD
-		totalsRow[12] = totals.ValueUSD
-		return cliio.WriteTableWithTotals(writer, headers, rows, totalsRow)
-	case cliio.FormatCSV:
-		headers := ibctlholdings.LotListHeaders()
-		records := make([][]string, 0, len(result.Lots)+1)
-		records = append(records, headers)
-		for _, l := range result.Lots {
-			records = append(records, ibctlholdings.LotOverviewToRow(l))
-		}
-		return cliio.WriteCSVRecords(writer, records)
-	case cliio.FormatJSON:
-		return cliio.WriteJSON(writer, result.Lots...)
-	default:
-		return appcmd.NewInvalidArgumentErrorf("unsupported format: %s", format)
+	// Sum up portfolio value, STCG, and LTCG from all holdings.
+	var totalValueMicros, totalSTCGMicros, totalLTCGMicros int64
+	for _, h := range result.Holdings {
+		totalValueMicros += mathpb.ParseMicros(h.MarketValueUSD)
+		totalSTCGMicros += mathpb.ParseMicros(h.STCGUSD)
+		totalLTCGMicros += mathpb.ParseMicros(h.LTCGUSD)
 	}
+	// Compute tax amounts. Gains are taxed; losses reduce taxes (can be negative).
+	stcgTaxMicros := int64(math.Round(float64(totalSTCGMicros) * config.TaxRateSTCG))
+	ltcgTaxMicros := int64(math.Round(float64(totalLTCGMicros) * config.TaxRateLTCG))
+	totalTaxMicros := stcgTaxMicros + ltcgTaxMicros
+	// After-tax value = portfolio value - total taxes.
+	afterTaxMicros := totalValueMicros - totalTaxMicros
+	// Print the summary.
+	writer := os.Stdout
+	fmt.Fprintf(writer, "Portfolio Value:  %s\n", cliio.FormatUSDMicros(totalValueMicros))
+	fmt.Fprintf(writer, "\n")
+	fmt.Fprintf(writer, "STCG:            %s\n", cliio.FormatUSDMicros(totalSTCGMicros))
+	fmt.Fprintf(writer, "STCG Tax (%.1f%%):  %s\n", config.TaxRateSTCG*100, cliio.FormatUSDMicros(stcgTaxMicros))
+	fmt.Fprintf(writer, "LTCG:            %s\n", cliio.FormatUSDMicros(totalLTCGMicros))
+	fmt.Fprintf(writer, "LTCG Tax (%.1f%%):  %s\n", config.TaxRateLTCG*100, cliio.FormatUSDMicros(ltcgTaxMicros))
+	fmt.Fprintf(writer, "Total Tax:       %s\n", cliio.FormatUSDMicros(totalTaxMicros))
+	fmt.Fprintf(writer, "\n")
+	fmt.Fprintf(writer, "After-Tax Value: %s\n", cliio.FormatUSDMicros(afterTaxMicros))
+	return nil
 }

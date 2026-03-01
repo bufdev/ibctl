@@ -67,6 +67,16 @@ type ExternalConfigV1 struct {
 	// Adjustments maps currency codes to manual cash adjustments (positive or negative).
 	// Applied to cash positions in the holdings display.
 	Adjustments map[string]string `yaml:"adjustments"`
+	// Taxes configures capital gains tax rates for portfolio value computation.
+	Taxes *ExternalTaxConfigV1 `yaml:"taxes"`
+}
+
+// ExternalTaxConfigV1 holds capital gains tax rate configuration.
+type ExternalTaxConfigV1 struct {
+	// STCG is the short-term capital gains tax rate (e.g., 0.408 for 40.8%).
+	STCG float64 `yaml:"stcg"`
+	// LTCG is the long-term capital gains tax rate (e.g., 0.28 for 28%).
+	LTCG float64 `yaml:"ltcg"`
 }
 
 // ExternalSymbolConfigV1 holds classification metadata for a symbol in v1 config.
@@ -99,6 +109,10 @@ type Config struct {
 	// CashAdjustments maps currency codes to manual cash adjustments in micros.
 	// Applied to cash positions in the holdings display.
 	CashAdjustments map[string]int64
+	// TaxRateSTCG is the short-term capital gains tax rate (e.g., 0.408).
+	TaxRateSTCG float64
+	// TaxRateLTCG is the long-term capital gains tax rate (e.g., 0.28).
+	TaxRateLTCG float64
 }
 
 // SymbolConfig holds classification metadata for a symbol.
@@ -166,6 +180,12 @@ func NewConfigV1(externalConfig ExternalConfigV1, dirPath string) (*Config, erro
 		}
 		cashAdjustments[currency] = units*1_000_000 + micros
 	}
+	// Extract tax rates if configured.
+	var taxRateSTCG, taxRateLTCG float64
+	if externalConfig.Taxes != nil {
+		taxRateSTCG = externalConfig.Taxes.STCG
+		taxRateLTCG = externalConfig.Taxes.LTCG
+	}
 	return &Config{
 		DirPath:          dirPath,
 		IBKRFlexQueryID:  externalConfig.FlexQueryID,
@@ -173,6 +193,8 @@ func NewConfigV1(externalConfig ExternalConfigV1, dirPath string) (*Config, erro
 		AccountIDToAlias: accountIDToAlias,
 		SymbolConfigs:    symbolConfigs,
 		CashAdjustments:  cashAdjustments,
+		TaxRateSTCG:      taxRateSTCG,
+		TaxRateLTCG:      taxRateLTCG,
 	}, nil
 }
 

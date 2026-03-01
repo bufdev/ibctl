@@ -164,6 +164,8 @@ type LotListResult struct {
 
 // LotOverview represents a single tax lot for display.
 type LotOverview struct {
+	// Symbol is the ticker symbol.
+	Symbol string `json:"symbol"`
 	// Account is the account alias.
 	Account string `json:"account"`
 	// Date is the lot open date (YYYY-MM-DD).
@@ -192,12 +194,13 @@ type LotOverview struct {
 
 // LotListHeaders returns the column headers for lot list table/CSV output.
 func LotListHeaders() []string {
-	return []string{"ACCOUNT", "DATE", "QUANTITY", "CURRENCY", "AVG PRICE", "P&L", "VALUE", "AVG USD", "P&L USD", "STCG USD", "LTCG USD", "VALUE USD"}
+	return []string{"SYMBOL", "ACCOUNT", "DATE", "QUANTITY", "CURRENCY", "AVG PRICE", "P&L", "VALUE", "AVG USD", "P&L USD", "STCG USD", "LTCG USD", "VALUE USD"}
 }
 
 // LotOverviewToRow converts a LotOverview to a string slice for CSV output.
 func LotOverviewToRow(l *LotOverview) []string {
 	return []string{
+		l.Symbol,
 		l.Account,
 		l.Date,
 		mathpb.ToString(l.Quantity),
@@ -217,6 +220,7 @@ func LotOverviewToRow(l *LotOverview) []string {
 // USD columns are formatted with $ prefix, comma separators, rounded to cents.
 func LotOverviewToTableRow(l *LotOverview) []string {
 	return []string{
+		l.Symbol,
 		l.Account,
 		l.Date,
 		mathpb.ToString(l.Quantity),
@@ -359,7 +363,8 @@ func GetCategoryList(holdings []*HoldingOverview) []*CategoryOverview {
 	return categories
 }
 
-// GetLotList returns the individual tax lots for a given symbol.
+// GetLotList returns individual tax lots, optionally filtered by symbol.
+// If symbol is empty, all lots are returned.
 func GetLotList(
 	symbol string,
 	trades []*datav1.Trade,
@@ -379,26 +384,42 @@ func GetLotList(
 	if err != nil {
 		return nil, err
 	}
-	// Look up the last price from IBKR-reported positions for this symbol.
-	var lastPriceMoney *datav1.Position
+	// Build a map of last prices and bond status from IBKR-reported positions.
+	type positionData struct {
+		lastPriceMicros int64
+		isBond          bool
+	}
+	positionMap := make(map[string]*positionData, len(positions))
 	for _, pos := range positions {
-		if pos.GetSymbol() == symbol {
-			lastPriceMoney = pos
-			break
+		if pos.GetAssetCategory() == assetCategoryCash {
+			continue
+		}
+		positionMap[pos.GetSymbol()] = &positionData{
+			lastPriceMicros: moneypb.MoneyToMicros(pos.GetMarketPrice()),
+			isBond:          pos.GetAssetCategory() == assetCategoryBond,
 		}
 	}
-	// Determine if this is a bond (prices are percentages of par).
-	isBond := lastPriceMoney != nil && lastPriceMoney.GetAssetCategory() == assetCategoryBond
-	// Get the last price in micros for P&L/value computation.
-	var lastPriceMicros int64
-	if lastPriceMoney != nil {
-		lastPriceMicros = moneypb.MoneyToMicros(lastPriceMoney.GetMarketPrice())
+	// Compute today's date for holding period classification.
+	today := xtime.Date{
+		Year:  time.Now().Year(),
+		Month: time.Now().Month(),
+		Day:   time.Now().Day(),
 	}
-	// Filter lots by symbol and build the lot overview.
+	// Build the lot overview, optionally filtering by symbol.
 	var lots []*LotOverview
 	for _, lot := range taxLotResult.TaxLots {
-		if lot.GetSymbol() != symbol {
+		lotSymbol := lot.GetSymbol()
+		// Filter by symbol if specified.
+		if symbol != "" && lotSymbol != symbol {
 			continue
+		}
+		// Look up position data for this symbol.
+		pd := positionMap[lotSymbol]
+		var lastPriceMicros int64
+		var isBond bool
+		if pd != nil {
+			lastPriceMicros = pd.lastPriceMicros
+			isBond = pd.isBond
 		}
 		costMicros := moneypb.MoneyToMicros(lot.GetCostBasisPrice())
 		lotQtyMicros := mathpb.ToMicros(lot.GetQuantity())
@@ -422,6 +443,7 @@ func GetLotList(
 			dateStr = fmt.Sprintf("%04d-%02d-%02d", d.GetYear(), d.GetMonth(), d.GetDay())
 		}
 		l := &LotOverview{
+			Symbol:       lotSymbol,
 			Account:      lot.GetAccountId(),
 			Date:         dateStr,
 			Quantity:     lot.GetQuantity(),
@@ -447,13 +469,8 @@ func GetLotList(
 		// Classify P&L as short-term or long-term based on holding period.
 		// For a single lot, the entire P&L is one or the other.
 		if l.PnLUSD != "" {
-			today := xtime.Date{
-				Year:  time.Now().Year(),
-				Month: time.Now().Month(),
-				Day:   time.Now().Day(),
-			}
-			longTerm, err := ibctltaxlot.IsLongTerm(lot, today)
-			if err == nil {
+			longTerm, ltErr := ibctltaxlot.IsLongTerm(lot, today)
+			if ltErr == nil {
 				if longTerm {
 					l.STCGUSD = "0"
 					l.LTCGUSD = l.PnLUSD
@@ -465,10 +482,13 @@ func GetLotList(
 		}
 		lots = append(lots, l)
 	}
-	// Sort lots by date for chronological display.
+	// Sort lots by date, then symbol, then account for chronological display.
 	sort.Slice(lots, func(i, j int) bool {
 		if lots[i].Date != lots[j].Date {
 			return lots[i].Date < lots[j].Date
+		}
+		if lots[i].Symbol != lots[j].Symbol {
+			return lots[i].Symbol < lots[j].Symbol
 		}
 		return lots[i].Account < lots[j].Account
 	})
