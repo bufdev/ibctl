@@ -107,8 +107,12 @@ func GetHoldingsOverview(
 		}
 		qtyMicros := mathpb.ToMicros(pos.GetQuantity())
 		data.quantityMicros += qtyMicros
-		// Accumulate total cost for weighted average.
-		data.totalCostMicros += moneypb.MoneyToMicros(pos.GetAverageCostBasisPrice()) * qtyMicros / 1_000_000
+		// Accumulate total cost for weighted average (price * quantity).
+		// Divide quantity first to avoid int64 overflow with large bond quantities.
+		priceMicros := moneypb.MoneyToMicros(pos.GetAverageCostBasisPrice())
+		qtyUnits := qtyMicros / 1_000_000
+		qtyRemainder := qtyMicros % 1_000_000
+		data.totalCostMicros += priceMicros*qtyUnits + priceMicros*qtyRemainder/1_000_000
 	}
 
 	// Build holdings overview from aggregated positions.
@@ -118,7 +122,14 @@ func GetHoldingsOverview(
 			continue
 		}
 		// Weighted average cost basis = total cost / total quantity.
-		avgCostMicros := data.totalCostMicros * 1_000_000 / data.quantityMicros
+		// Divide quantity first to avoid int64 overflow with large bond quantities.
+		qtyUnits := data.quantityMicros / 1_000_000
+		var avgCostMicros int64
+		if qtyUnits != 0 {
+			avgCostMicros = data.totalCostMicros / qtyUnits
+		} else {
+			avgCostMicros = data.totalCostMicros * 1_000_000 / data.quantityMicros
+		}
 		holding := &HoldingOverview{
 			Symbol:       symbol,
 			LastPrice:    marketPrices[symbol],

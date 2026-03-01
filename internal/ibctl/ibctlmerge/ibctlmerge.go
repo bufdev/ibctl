@@ -75,14 +75,9 @@ func Merge(
 					}
 					csvTrades = append(csvTrades, trade)
 				}
-				// CSV positions for this account.
-				for i := range statement.Positions {
-					pos, err := csvPositionToProto(&statement.Positions[i], alias)
-					if err != nil {
-						continue
-					}
-					allPositions = append(allPositions, pos)
-				}
+				// CSV positions are historical snapshots — we use Flex Query positions
+				// instead since they have current market prices. CSV positions are not
+				// loaded here.
 			}
 		}
 		// Find the date range covered by CSV trades for this account.
@@ -231,38 +226,6 @@ func csvTradeToProto(csvTrade *ibkractivitycsv.Trade, accountAlias string) (*dat
 		Proceeds:     proceeds,
 		Commission:   commission,
 		CurrencyCode: currencyCode,
-	}, nil
-}
-
-// csvPositionToProto converts an Activity Statement CSV position to a proto Position.
-// The accountAlias is derived from the CSV subdirectory name.
-func csvPositionToProto(csvPosition *ibkractivitycsv.Position, accountAlias string) (*datav1.Position, error) {
-	currencyCode := csvPosition.CurrencyCode
-	quantity, err := mathpb.NewDecimal(csvPosition.Quantity)
-	if err != nil {
-		return nil, fmt.Errorf("parsing quantity %q: %w", csvPosition.Quantity, err)
-	}
-	costBasisPrice, err := moneypb.NewProtoMoney(currencyCode, csvPosition.CostPrice)
-	if err != nil {
-		return nil, fmt.Errorf("parsing cost price: %w", err)
-	}
-	marketPrice, err := moneypb.NewProtoMoney(currencyCode, csvPosition.ClosePrice)
-	if err != nil {
-		return nil, fmt.Errorf("parsing close price: %w", err)
-	}
-	marketValue, err := moneypb.NewProtoMoney(currencyCode, csvPosition.Value)
-	if err != nil {
-		return nil, fmt.Errorf("parsing value: %w", err)
-	}
-	return &datav1.Position{
-		Symbol:         csvPosition.Symbol,
-		AccountId:      accountAlias,
-		AssetCategory:  csvPosition.AssetCategory,
-		Quantity:       quantity,
-		CostBasisPrice: costBasisPrice,
-		MarketPrice:    marketPrice,
-		MarketValue:    marketValue,
-		CurrencyCode:   currencyCode,
 	}, nil
 }
 

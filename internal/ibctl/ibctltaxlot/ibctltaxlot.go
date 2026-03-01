@@ -136,22 +136,40 @@ func ComputeTaxLots(trades []*datav1.Trade) (*TaxLotResult, error) {
 				if err != nil {
 					return nil, fmt.Errorf("parsing trade date for %s/%s: %w", key.accountAlias, key.symbol, err)
 				}
-				// Create a new tax lot from the buy trade.
 				tradeQuantityMicros := mathpb.ToMicros(trade.GetQuantity())
-				groupLots[key] = append(groupLots[key], &taxLot{
-					accountAlias:    key.accountAlias,
-					symbol:          key.symbol,
-					openDate:        openDate,
-					quantityMicros:  tradeQuantityMicros,
-					costBasisMicros: moneypb.MoneyToMicros(trade.GetTradePrice()),
-					currencyCode:    trade.GetCurrencyCode(),
-				})
+				lots := groupLots[key]
+				// Check if there are short lots to close (buy-to-close after sell-to-open).
+				for len(lots) > 0 && lots[0].quantityMicros < 0 && tradeQuantityMicros > 0 {
+					shortLot := lots[0]
+					shortQty := -shortLot.quantityMicros // Positive amount to close.
+					if shortQty <= tradeQuantityMicros {
+						// Fully close this short lot.
+						tradeQuantityMicros -= shortQty
+						lots = lots[1:]
+					} else {
+						// Partially close this short lot.
+						shortLot.quantityMicros += tradeQuantityMicros
+						tradeQuantityMicros = 0
+					}
+				}
+				groupLots[key] = lots
+				// Any remaining buy quantity creates a new long lot.
+				if tradeQuantityMicros > 0 {
+					groupLots[key] = append(groupLots[key], &taxLot{
+						accountAlias:    key.accountAlias,
+						symbol:          key.symbol,
+						openDate:        openDate,
+						quantityMicros:  tradeQuantityMicros,
+						costBasisMicros: moneypb.MoneyToMicros(trade.GetTradePrice()),
+						currencyCode:    trade.GetCurrencyCode(),
+					})
+				}
 			case datav1.TradeSide_TRADE_SIDE_SELL:
 				// Sells consume the oldest lots first (FIFO).
 				// Sell quantity is negative, so negate to get the positive amount to consume.
 				remainingMicros := -mathpb.ToMicros(trade.GetQuantity())
 				lots := groupLots[key]
-				for len(lots) > 0 && remainingMicros > 0 {
+				for len(lots) > 0 && lots[0].quantityMicros > 0 && remainingMicros > 0 {
 					lot := lots[0]
 					if lot.quantityMicros <= remainingMicros {
 						// This lot is fully consumed.
@@ -164,21 +182,34 @@ func ComputeTaxLots(trades []*datav1.Trade) (*TaxLotResult, error) {
 					}
 				}
 				groupLots[key] = lots
-				// Record any unmatched sell quantity (buy likely before data window).
+				// If there's remaining sell quantity with no lots to consume,
+				// create a short lot (sell-to-open, e.g., writing options).
 				if remainingMicros > 0 {
-					unmatchedSells = append(unmatchedSells, UnmatchedSell{
-						AccountAlias:      key.accountAlias,
-						Symbol:            key.symbol,
-						UnmatchedQuantity: mathpb.FromMicros(remainingMicros),
+					openDate, err := protoDateToXtimeDate(trade.GetTradeDate())
+					if err != nil {
+						return nil, fmt.Errorf("parsing trade date for %s/%s: %w", key.accountAlias, key.symbol, err)
+					}
+					groupLots[key] = append(groupLots[key], &taxLot{
+						accountAlias:    key.accountAlias,
+						symbol:          key.symbol,
+						openDate:        openDate,
+						quantityMicros:  -remainingMicros, // Negative = short position.
+						costBasisMicros: moneypb.MoneyToMicros(trade.GetTradePrice()),
+						currencyCode:    trade.GetCurrencyCode(),
 					})
 				}
 			}
 		}
 	}
-	// Convert internal lots to proto tax lots.
+	// Convert internal lots to proto tax lots. All lots (long and short) are included.
 	var result []*datav1.TaxLot
 	for _, lots := range groupLots {
 		for _, lot := range lots {
+			// Zero-quantity lots should not exist — they indicate a bug.
+			if lot.quantityMicros == 0 {
+				return nil, fmt.Errorf("zero-quantity lot for %s/%s on %s: this indicates a FIFO computation bug",
+					lot.accountAlias, lot.symbol, lot.openDate)
+			}
 			protoOpenDate, err := timepb.DateToProto(lot.openDate)
 			if err != nil {
 				return nil, err
@@ -228,8 +259,14 @@ func ComputePositions(taxLots []*datav1.TaxLot) []*datav1.ComputedPosition {
 		}
 		lotQtyMicros := mathpb.ToMicros(lot.GetQuantity())
 		data.quantityMicros += lotQtyMicros
-		// Total cost is price * quantity (both in micros, divide by microsFactor to avoid overflow).
-		data.totalCostMicros += moneypb.MoneyToMicros(lot.GetCostBasisPrice()) * lotQtyMicros / microsFactor
+		// Total cost = price * quantity. Both are in micros so we need to divide by microsFactor.
+		// To avoid int64 overflow with large quantities (e.g., bonds with 331000 face value),
+		// divide quantity by microsFactor first (converting back to units), then multiply by price.
+		lotQtyUnits := lotQtyMicros / microsFactor
+		lotQtyRemainder := lotQtyMicros % microsFactor
+		priceMicros := moneypb.MoneyToMicros(lot.GetCostBasisPrice())
+		// cost = price * (qtyUnits + qtyRemainder/microsFactor) = price*qtyUnits + price*qtyRemainder/microsFactor
+		data.totalCostMicros += priceMicros*lotQtyUnits + priceMicros*lotQtyRemainder/microsFactor
 	}
 	// Build computed positions.
 	var positions []*datav1.ComputedPosition
@@ -238,7 +275,19 @@ func ComputePositions(taxLots []*datav1.TaxLot) []*datav1.ComputedPosition {
 			continue
 		}
 		// Weighted average cost basis = total cost / total quantity.
-		avgCostMicros := data.totalCostMicros * microsFactor / data.quantityMicros
+		// For large quantities (e.g., bonds with 331000 face value), the naive
+		// totalCostMicros * microsFactor overflows int64. Instead, compute
+		// avgCost = totalCost / (quantity / microsFactor) for large quantities,
+		// falling back to the precise formula for small quantities.
+		qtyUnits := data.quantityMicros / microsFactor
+		var avgCostMicros int64
+		if qtyUnits != 0 {
+			// Divide first to avoid overflow: totalCost / qtyUnits gives the result directly.
+			avgCostMicros = data.totalCostMicros / qtyUnits
+		} else {
+			// Small quantity (< 1 unit): use the precise formula.
+			avgCostMicros = data.totalCostMicros * microsFactor / data.quantityMicros
+		}
 		positions = append(positions, &datav1.ComputedPosition{
 			Symbol:                key.symbol,
 			AccountId:             key.accountAlias,

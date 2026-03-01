@@ -40,11 +40,16 @@ func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 	}
 }
 
+// cachedFlagName is the flag name for skipping download and using cached data only.
+const cachedFlagName = "cached"
+
 type flags struct {
 	// Config is the path to the configuration file.
 	Config string
 	// Format is the output format (table, csv, json).
 	Format string
+	// Cached skips downloading and uses only cached data.
+	Cached bool
 }
 
 func newFlags() *flags {
@@ -55,6 +60,7 @@ func newFlags() *flags {
 func (f *flags) Bind(flagSet *pflag.FlagSet) {
 	flagSet.StringVar(&f.Config, ibctlcmd.ConfigFlagName, ibctlconfig.DefaultConfigFileName, "The configuration file path")
 	flagSet.StringVar(&f.Format, formatFlagName, "table", "Output format (table, csv, json)")
+	flagSet.BoolVar(&f.Cached, cachedFlagName, false, "Skip downloading and use only cached data")
 }
 
 func run(ctx context.Context, container appext.Container, flags *flags) error {
@@ -67,13 +73,15 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	if err != nil {
 		return err
 	}
-	// Ensure Flex Query data has been downloaded (implicitly downloads if missing).
-	downloader, err := ibctlcmd.NewDownloader(container, flags.Config)
-	if err != nil {
-		return err
-	}
-	if err := downloader.EnsureDownloaded(ctx); err != nil {
-		return err
+	// Download fresh data unless --cached is set.
+	if !flags.Cached {
+		downloader, err := ibctlcmd.NewDownloader(container, flags.Config)
+		if err != nil {
+			return err
+		}
+		if err := downloader.Download(ctx); err != nil {
+			return err
+		}
 	}
 	// Merge seed lots + Activity Statement CSVs + Flex Query cached data across all accounts.
 	mergedData, err := ibctlmerge.Merge(config.DataDirV1Path, config.ActivityStatementsDirPath, config.SeedDirPath, config.AccountAliases)

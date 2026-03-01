@@ -36,8 +36,6 @@ type Downloader interface {
 	// cached data. Data is stored per account under v1/<alias>/.
 	// Idempotent — safe to call multiple times.
 	Download(ctx context.Context) error
-	// EnsureDownloaded checks if cached data files exist and downloads if they don't.
-	EnsureDownloaded(ctx context.Context) error
 }
 
 // NewDownloader creates a new Downloader with all required dependencies.
@@ -68,20 +66,6 @@ type downloader struct {
 	config          *ibctlconfig.Config
 	flexQueryClient ibkrflexquery.Client
 	fxRateClient    frankfurter.Client
-}
-
-func (d *downloader) EnsureDownloaded(ctx context.Context) error {
-	// Check if at least one account has cached data.
-	for alias := range d.config.AccountAliases {
-		accountDir := filepath.Join(d.dataDirV1Path, alias)
-		tradesPath := filepath.Join(accountDir, "trades.json")
-		positionsPath := filepath.Join(accountDir, "positions.json")
-		if fileExists(tradesPath) && fileExists(positionsPath) {
-			// At least one account has data — assume we're good.
-			return nil
-		}
-	}
-	return d.Download(ctx)
 }
 
 func (d *downloader) Download(ctx context.Context) error {
@@ -590,10 +574,10 @@ func xmlPositionToProto(xmlPosition *ibkrflexquery.XMLPosition, accountAlias str
 	if err != nil {
 		return nil, fmt.Errorf("parsing fifo pnl unrealized: %w", err)
 	}
-	// Parse the quantity as a decimal (supports fractional shares).
-	quantity, err := mathpb.NewDecimal(xmlPosition.Quantity)
+	// Parse the position quantity as a decimal (IBKR uses "position" attribute, not "quantity").
+	quantity, err := mathpb.NewDecimal(xmlPosition.Position)
 	if err != nil {
-		return nil, fmt.Errorf("parsing quantity %q: %w", xmlPosition.Quantity, err)
+		return nil, fmt.Errorf("parsing position quantity %q: %w", xmlPosition.Position, err)
 	}
 	return &datav1.Position{
 		Symbol:            xmlPosition.Symbol,

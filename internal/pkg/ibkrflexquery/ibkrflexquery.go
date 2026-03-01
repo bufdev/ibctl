@@ -108,12 +108,13 @@ type XMLTrade struct {
 }
 
 // XMLPosition represents an open position in the IBKR Flex Query XML format.
-// All fields are XML attributes.
+// All fields are XML attributes. Note: IBKR uses "position" (not "quantity") for the held amount.
 type XMLPosition struct {
-	Symbol            string `xml:"symbol,attr"`
-	Description       string `xml:"description,attr"`
-	AssetCategory     string `xml:"assetCategory,attr"`
-	Quantity          string `xml:"quantity,attr"`
+	Symbol        string `xml:"symbol,attr"`
+	Description   string `xml:"description,attr"`
+	AssetCategory string `xml:"assetCategory,attr"`
+	// Position is the quantity held (IBKR uses the attribute name "position", not "quantity").
+	Position          string `xml:"position,attr"`
 	CostBasisPrice    string `xml:"costBasisPrice,attr"`
 	MarkPrice         string `xml:"markPrice,attr"`
 	PositionValue     string `xml:"positionValue,attr"`
