@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	datav1 "github.com/bufdev/ibctl/internal/gen/proto/go/ibctl/data/v1"
@@ -215,19 +214,15 @@ func csvPositionToProto(csvPosition *ibkractivitycsv.Position, accountAlias stri
 }
 
 // tradeKey generates a deterministic dedup key for a trade proto.
-// Uses TradeId if available (Flex Query trades), otherwise Symbol+Date+Quantity+Price.
-// Includes account_id in the key so trades from different accounts don't collide.
+// Always uses content-based key (account + symbol + date + quantity + price)
+// so that the same trade from different sources (Flex Query API vs Activity
+// Statement CSV) is recognized as the same trade and deduplicated.
 func tradeKey(trade *datav1.Trade) string {
 	accountPrefix := trade.GetAccountId()
 	if accountPrefix == "" {
 		accountPrefix = "unknown"
 	}
-	if trade.GetTradeId() != "" && !strings.HasPrefix(trade.GetTradeId(), "csv-") {
-		// Flex Query trades have real IBKR trade IDs, scoped per account.
-		return fmt.Sprintf("%s-ibkr-%s", accountPrefix, trade.GetTradeId())
-	}
-	// CSV-derived trades use composite key.
-	return fmt.Sprintf("%s-csv-%s-%s-%s-%s",
+	return fmt.Sprintf("%s-%s-%s-%s-%s",
 		accountPrefix,
 		trade.GetSymbol(),
 		protoDateString(trade.GetTradeDate()),
