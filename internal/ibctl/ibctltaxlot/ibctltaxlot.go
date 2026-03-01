@@ -108,12 +108,18 @@ func ComputeTaxLots(trades []*datav1.Trade) (*TaxLotResult, error) {
 		key := lotKey{accountAlias: trade.GetAccountId(), symbol: trade.GetSymbol()}
 		keyTrades[key] = append(keyTrades[key], trade)
 	}
-	// Sort trades within each group by trade date.
+	// Sort trades within each group by trade date, with buys before sells
+	// on the same date. This ensures FIFO has lots available before sells
+	// try to consume them (important for same-day buy+sell scenarios).
 	for _, trades := range keyTrades {
 		sort.Slice(trades, func(i, j int) bool {
 			dateI := tradeDateString(trades[i])
 			dateJ := tradeDateString(trades[j])
-			return dateI < dateJ
+			if dateI != dateJ {
+				return dateI < dateJ
+			}
+			// Within the same date, buys (side=1) come before sells (side=2).
+			return trades[i].GetSide() < trades[j].GetSide()
 		})
 	}
 	// Process trades using FIFO within each (account, symbol) group.

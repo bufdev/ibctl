@@ -89,13 +89,17 @@ func Merge(
 		// Flex Query trades within this range will be excluded.
 		csvMinDate, csvMaxDate := tradeDateRange(csvTrades)
 		allTrades = append(allTrades, csvTrades...)
-		// Step 2: Load seed lots (pre-transfer tax lots from previous broker).
-		// These are permanent data that represent the original cost basis.
+		// Step 2: Load imported transactions from previous broker (seed data).
+		// These are the complete normalized transaction history (buys, sells,
+		// splits, dividends, expiries) from UBS/RBC, converted to Trade protos.
 		if seedDirPath != "" {
-			seedLotsPath := filepath.Join(seedDirPath, alias, "lots.json")
-			seedLots, err := protoio.ReadMessagesJSON(seedLotsPath, func() *datav1.Trade { return &datav1.Trade{} })
+			seedTxnPath := filepath.Join(seedDirPath, alias, "transactions.json")
+			importedTxns, err := protoio.ReadMessagesJSON(seedTxnPath, func() *datav1.ImportedTransaction { return &datav1.ImportedTransaction{} })
 			if err == nil {
-				allTrades = append(allTrades, seedLots...)
+				for _, txn := range importedTxns {
+					trade := importedTransactionToTrade(txn)
+					allTrades = append(allTrades, trade)
+				}
 			}
 		}
 		// Step 3: Load Flex Query cached trades, excluding dates covered by CSVs.
@@ -268,6 +272,68 @@ func generateTradeID(symbol string, dateTime time.Time, quantity string, price s
 	raw := fmt.Sprintf("%s|%s|%s|%s", symbol, dateTime.Format(time.RFC3339), quantity, price)
 	hash := sha256.Sum256([]byte(raw))
 	return fmt.Sprintf("csv-%x", hash[:8])
+}
+
+// importedTransactionToTrade converts an ImportedTransaction (from the previous broker)
+// to a Trade proto for FIFO processing. Uses the ibkr_symbol field for the symbol
+// so it matches IBKR's naming convention.
+func importedTransactionToTrade(txn *datav1.ImportedTransaction) *datav1.Trade {
+	// Map imported transaction type to trade side.
+	var side datav1.TradeSide
+	switch txn.GetType() {
+	case datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_BUY,
+		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_STOCK_DIVIDEND:
+		// Buys and stock dividends add to position.
+		side = datav1.TradeSide_TRADE_SIDE_BUY
+	case datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_SELL,
+		datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_EXPIRY:
+		// Sells and expiries reduce position.
+		side = datav1.TradeSide_TRADE_SIDE_SELL
+	case datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_SPLIT:
+		// Splits are handled as buys with zero price (quantity adjustment).
+		if txn.GetQuantity() >= 0 {
+			side = datav1.TradeSide_TRADE_SIDE_BUY
+		} else {
+			side = datav1.TradeSide_TRADE_SIDE_SELL
+		}
+	case datav1.ImportedTransactionType_IMPORTED_TRANSACTION_TYPE_UNSPECIFIED:
+		// Skip unspecified transactions.
+		side = datav1.TradeSide_TRADE_SIDE_UNSPECIFIED
+	}
+	// Use ibkr_symbol for FIFO matching.
+	symbol := txn.GetIbkrSymbol()
+	// Determine currency from price if available.
+	currencyCode := "USD"
+	if txn.GetPrice() != nil {
+		currencyCode = txn.GetPrice().GetCurrencyCode()
+	}
+	// Build quantity as Decimal.
+	quantity := mathpb.FromMicros(txn.GetQuantity() * 1_000_000)
+	// Use price if available, otherwise zero.
+	tradePrice := txn.GetPrice()
+	if tradePrice == nil {
+		tradePrice = moneypb.MoneyFromMicros(currencyCode, 0)
+	}
+	// Generate a deterministic trade ID.
+	tradeID := fmt.Sprintf("imported-%s-%04d%02d%02d-%d",
+		symbol,
+		txn.GetDate().GetYear(), txn.GetDate().GetMonth(), txn.GetDate().GetDay(),
+		txn.GetQuantity(),
+	)
+	return &datav1.Trade{
+		TradeId:       tradeID,
+		AccountId:     txn.GetAccountId(),
+		TradeDate:     txn.GetDate(),
+		SettleDate:    txn.GetDate(),
+		Symbol:        symbol,
+		AssetCategory: "STK",
+		Side:          side,
+		Quantity:      quantity,
+		TradePrice:    tradePrice,
+		Proceeds:      moneypb.MoneyFromMicros(currencyCode, 0),
+		Commission:    moneypb.MoneyFromMicros(currencyCode, 0),
+		CurrencyCode:  currencyCode,
+	}
 }
 
 // protoDateString returns a sortable date string from a proto Date.

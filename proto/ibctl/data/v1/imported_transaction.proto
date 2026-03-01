@@ -1,0 +1,47 @@
+// Copyright 2026 Peter Edge
+//
+// All rights reserved.
+
+syntax = "proto3";
+
+package ibctl.data.v1;
+
+import "buf/validate/validate.proto";
+import "standard/money/v1/money.proto";
+import "standard/time/v1/date.proto";
+
+// ImportedTransactionType indicates the type of an imported transaction
+// from a previous broker.
+enum ImportedTransactionType {
+  IMPORTED_TRANSACTION_TYPE_UNSPECIFIED = 0;
+  IMPORTED_TRANSACTION_TYPE_BUY = 1;
+  IMPORTED_TRANSACTION_TYPE_SELL = 2;
+  // Stock split (quantity change, price may be zero).
+  IMPORTED_TRANSACTION_TYPE_SPLIT = 3;
+  // Stock dividend (shares received as dividend).
+  IMPORTED_TRANSACTION_TYPE_STOCK_DIVIDEND = 4;
+  // Option or security expiry.
+  IMPORTED_TRANSACTION_TYPE_EXPIRY = 5;
+}
+
+// ImportedTransaction represents a normalized transaction from a previous broker
+// These are permanent seed data imported once from the
+// financemigrate project and stored in the seed directory.
+message ImportedTransaction {
+  // The account alias this transaction belongs to (e.g., "individual").
+  string account_id = 1 [(buf.validate.field).required = true];
+  // The settlement date of the transaction.
+  standard.time.v1.Date date = 2 [(buf.validate.field).required = true];
+  // The type of transaction.
+  ImportedTransactionType type = 3 [(buf.validate.field).enum.not_in = 0];
+  // The ticker symbol (using the previous broker's symbol format).
+  string symbol = 4 [(buf.validate.field).required = true];
+  // The IBKR symbol (after alias mapping). Used for FIFO matching.
+  string ibkr_symbol = 5 [(buf.validate.field).required = true];
+  // A human-readable description of the security.
+  string description = 6;
+  // The quantity. Positive for buys, negative for sells.
+  int64 quantity = 7;
+  // The price per unit. Always positive. May be zero for splits and expiries.
+  standard.money.v1.Money price = 8;
+}
