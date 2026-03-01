@@ -51,6 +51,7 @@ type MergedData struct {
 func Merge(
 	dataDirV1Path string,
 	activityStatementsDirPath string,
+	seedDirPath string,
 	accountAliases map[string]string,
 ) (*MergedData, error) {
 	var allTrades []*datav1.Trade
@@ -88,7 +89,16 @@ func Merge(
 		// Flex Query trades within this range will be excluded.
 		csvMinDate, csvMaxDate := tradeDateRange(csvTrades)
 		allTrades = append(allTrades, csvTrades...)
-		// Step 2: Load Flex Query cached trades, excluding dates covered by CSVs.
+		// Step 2: Load seed lots (pre-transfer tax lots from previous broker).
+		// These are permanent data that represent the original cost basis.
+		if seedDirPath != "" {
+			seedLotsPath := filepath.Join(seedDirPath, alias, "lots.json")
+			seedLots, err := protoio.ReadMessagesJSON(seedLotsPath, func() *datav1.Trade { return &datav1.Trade{} })
+			if err == nil {
+				allTrades = append(allTrades, seedLots...)
+			}
+		}
+		// Step 3: Load Flex Query cached trades, excluding dates covered by CSVs.
 		accountDir := filepath.Join(dataDirV1Path, alias)
 		tradesPath := filepath.Join(accountDir, "trades.json")
 		cachedTrades, err := protoio.ReadMessagesJSON(tradesPath, func() *datav1.Trade { return &datav1.Trade{} })

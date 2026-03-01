@@ -53,6 +53,11 @@ accounts:
 # Required. Organize by account subdirectory (e.g., ~/Documents/ibkr-statements/my-account/).
 # ibctl reads all *.csv files recursively. See README for setup instructions.
 activity_statements_dir: ~/Documents/ibkr-statements
+# Permanent seed data directory for pre-transfer tax lots from previous brokers.
+#
+# Optional. Organized by account subdirectory (e.g., seed_dir/individual/lots.json).
+# This data is manually curated and must not be deleted.
+# seed_dir: ~/Documents/ibkr/seed
 # Symbol classification configuration.
 #
 # Optional. Adds category, type, and sector metadata to holdings output.
@@ -73,6 +78,10 @@ type ExternalConfigV1 struct {
 	FlexQueryID string `yaml:"flex_query_id"`
 	// ActivityStatementsDir is the directory containing IBKR Activity Statement CSVs.
 	ActivityStatementsDir string `yaml:"activity_statements_dir"`
+	// SeedDir is the permanent seed data directory for pre-transfer tax lots.
+	// Organized by account subdirectory (e.g., seed_dir/individual/lots.json).
+	// This data is manually curated and must not be deleted.
+	SeedDir string `yaml:"seed_dir"`
 	// Accounts maps user-chosen aliases to IBKR account IDs.
 	Accounts map[string]string `yaml:"accounts"`
 	// Symbols is the optional list of symbol classifications.
@@ -105,6 +114,9 @@ type Config struct {
 	IBKRFlexQueryID string
 	// ActivityStatementsDirPath is the resolved path to the Activity Statements directory.
 	ActivityStatementsDirPath string
+	// SeedDirPath is the resolved path to the permanent seed data directory.
+	// Empty if not configured.
+	SeedDirPath string
 	// AccountAliases maps account aliases to IBKR account IDs (e.g., "rrsp" → "U1234567").
 	AccountAliases map[string]string
 	// AccountIDToAlias maps IBKR account IDs to aliases (e.g., "U1234567" → "rrsp").
@@ -167,6 +179,14 @@ func NewConfigV1(externalConfig ExternalConfigV1) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Resolve the seed data directory path if configured.
+	var seedDirPath string
+	if externalConfig.SeedDir != "" {
+		seedDirPath, err = xos.ExpandHome(externalConfig.SeedDir)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// Build symbol configs map, checking for duplicates.
 	symbolConfigs := make(map[string]SymbolConfig, len(externalConfig.Symbols))
 	for _, s := range externalConfig.Symbols {
@@ -186,6 +206,7 @@ func NewConfigV1(externalConfig ExternalConfigV1) (*Config, error) {
 		DataDirV1Path:             dataDirV1Path,
 		IBKRFlexQueryID:           externalConfig.FlexQueryID,
 		ActivityStatementsDirPath: activityStatementsDirPath,
+		SeedDirPath:               seedDirPath,
 		AccountAliases:            accountAliases,
 		AccountIDToAlias:          accountIDToAlias,
 		SymbolConfigs:             symbolConfigs,

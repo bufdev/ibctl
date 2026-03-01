@@ -3,6 +3,10 @@
 // All rights reserved.
 
 // Package ibctlholdings provides holdings overview computation for ibctl.
+//
+// Holdings are computed via FIFO tax lot computation from all trade data
+// (seed lots from previous brokers + Activity Statement CSVs + Flex Query API).
+// Results are verified against IBKR-reported positions to detect discrepancies.
 package ibctlholdings
 
 import (
@@ -63,43 +67,31 @@ func HoldingOverviewToRow(h *HoldingOverview) []string {
 	}
 }
 
-// GetHoldingsOverview computes the holdings overview from merged trade and position data.
-// Trades are used to compute FIFO tax lots and average cost basis.
-// Positions provide the latest market prices and are used for verification.
-// Transfers are converted to synthetic trades for FIFO processing.
+// GetHoldingsOverview computes the holdings overview from trade data using FIFO,
+// then verifies against IBKR-reported positions.
 // The result is a combined view aggregated across all accounts.
 func GetHoldingsOverview(
 	trades []*datav1.Trade,
 	positions []*datav1.Position,
-	transfers []*datav1.Transfer,
-	tradeTransfers []*datav1.TradeTransfer,
 	config *ibctlconfig.Config,
 ) (*HoldingsResult, error) {
-	// Convert transfers and trade transfers to synthetic trades for FIFO processing.
-	allTrades := make([]*datav1.Trade, 0, len(trades))
-	allTrades = append(allTrades, trades...)
-	allTrades = append(allTrades, ibctltaxlot.TransfersToSyntheticTrades(transfers)...)
-	allTrades = append(allTrades, ibctltaxlot.TradeTransfersToSyntheticTrades(tradeTransfers)...)
-	// Compute tax lots from all trades (real + synthetic from transfers).
-	taxLotResult, err := ibctltaxlot.ComputeTaxLots(allTrades)
+	// Compute FIFO tax lots from all trades (seed + CSV + Flex Query).
+	taxLotResult, err := ibctltaxlot.ComputeTaxLots(trades)
 	if err != nil {
 		return nil, err
 	}
-	// Compute per-account positions from tax lots for verification.
+	// Compute per-account positions from tax lots.
 	computedPositions := ibctltaxlot.ComputePositions(taxLotResult.TaxLots)
-	// Verify per-account computed positions against per-account IBKR-reported positions.
-	// This must happen before aggregation so account_id keys match.
+	// Verify per-account computed positions against IBKR-reported positions.
 	discrepancies := ibctltaxlot.VerifyPositions(computedPositions, positions)
 
-	// Build a map of market prices from IBKR-reported positions, keyed by symbol.
-	// For combined view, we use the latest price from any account that reports it.
+	// Build a map of market prices from IBKR-reported positions.
 	marketPrices := make(map[string]string, len(positions))
 	for _, pos := range positions {
 		marketPrices[pos.GetSymbol()] = moneypb.MoneyValueToString(pos.GetMarketPrice())
 	}
 
 	// Aggregate computed positions across accounts for combined display.
-	// Group by symbol, sum quantities, weighted-average cost basis.
 	type combinedData struct {
 		quantityMicros  int64
 		totalCostMicros int64

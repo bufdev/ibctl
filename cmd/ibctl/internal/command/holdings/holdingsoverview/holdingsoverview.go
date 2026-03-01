@@ -75,19 +75,13 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	if err := downloader.EnsureDownloaded(ctx); err != nil {
 		return err
 	}
-	// Merge Activity Statement CSVs with Flex Query cached data across all accounts.
-	mergedData, err := ibctlmerge.Merge(config.DataDirV1Path, config.ActivityStatementsDirPath, config.AccountAliases)
+	// Merge seed lots + Activity Statement CSVs + Flex Query cached data across all accounts.
+	mergedData, err := ibctlmerge.Merge(config.DataDirV1Path, config.ActivityStatementsDirPath, config.SeedDirPath, config.AccountAliases)
 	if err != nil {
 		return err
 	}
-	// Compute the combined holdings overview from merged data.
-	result, err := ibctlholdings.GetHoldingsOverview(
-		mergedData.Trades,
-		mergedData.Positions,
-		mergedData.Transfers,
-		mergedData.TradeTransfers,
-		config,
-	)
+	// Compute holdings via FIFO from all trade data, verified against IBKR positions.
+	result, err := ibctlholdings.GetHoldingsOverview(mergedData.Trades, mergedData.Positions, config)
 	if err != nil {
 		return err
 	}
@@ -100,8 +94,8 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 			"unmatched_quantity", mathpb.ToString(unmatched.UnmatchedQuantity),
 		)
 	}
-	for _, discrepancy := range result.PositionDiscrepancies {
-		logPositionDiscrepancy(container, discrepancy)
+	for _, d := range result.PositionDiscrepancies {
+		logPositionDiscrepancy(container, d)
 	}
 	// Write output in the requested format.
 	writer := os.Stdout
