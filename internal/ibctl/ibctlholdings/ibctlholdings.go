@@ -46,6 +46,10 @@ type HoldingOverview struct {
 	LastPriceUSD string `json:"last_price_usd,omitempty"`
 	// AveragePriceUSD is the average cost basis price converted to USD.
 	AveragePriceUSD string `json:"average_price_usd,omitempty"`
+	// MarketValueUSD is position * last price USD.
+	MarketValueUSD string `json:"market_value_usd,omitempty"`
+	// UnrealizedPnLUSD is (last price USD - avg price USD) * position.
+	UnrealizedPnLUSD string `json:"unrealized_pnl_usd,omitempty"`
 	// Position is the total quantity held.
 	Position *mathv1.Decimal `json:"position"`
 	// Category is the user-defined asset category (e.g., "EQUITY").
@@ -58,7 +62,7 @@ type HoldingOverview struct {
 
 // HoldingsOverviewHeaders returns the column headers for table/CSV output.
 func HoldingsOverviewHeaders() []string {
-	return []string{"SYMBOL", "CURRENCY", "LAST PRICE", "AVG PRICE", "LAST USD", "AVG USD", "POSITION", "CATEGORY", "TYPE", "SECTOR"}
+	return []string{"SYMBOL", "CURRENCY", "LAST PRICE", "AVG PRICE", "LAST USD", "AVG USD", "MKT VAL USD", "UNRLZD P&L USD", "POSITION", "CATEGORY", "TYPE", "SECTOR"}
 }
 
 // HoldingOverviewToRow converts a HoldingOverview to a string slice for table/CSV output.
@@ -70,11 +74,33 @@ func HoldingOverviewToRow(h *HoldingOverview) []string {
 		h.AveragePrice,
 		h.LastPriceUSD,
 		h.AveragePriceUSD,
+		h.MarketValueUSD,
+		h.UnrealizedPnLUSD,
 		mathpb.ToString(h.Position),
 		h.Category,
 		h.Type,
 		h.Sector,
 	}
+}
+
+// ComputeTotals sums the MarketValueUSD and UnrealizedPnLUSD across all holdings.
+// Returns formatted strings for the totals row.
+func ComputeTotals(holdings []*HoldingOverview) (string, string) {
+	var totalMktValMicros, totalPnLMicros int64
+	for _, h := range holdings {
+		if h.MarketValueUSD != "" {
+			if units, micros, err := mathpb.ParseToUnitsMicros(h.MarketValueUSD); err == nil {
+				totalMktValMicros += units*1_000_000 + micros
+			}
+		}
+		if h.UnrealizedPnLUSD != "" {
+			if units, micros, err := mathpb.ParseToUnitsMicros(h.UnrealizedPnLUSD); err == nil {
+				totalPnLMicros += units*1_000_000 + micros
+			}
+		}
+	}
+	return moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", totalMktValMicros)),
+		moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", totalPnLMicros))
 }
 
 // GetHoldingsOverview computes the holdings overview from trade data using FIFO,
@@ -176,15 +202,41 @@ func GetHoldingsOverview(
 			AveragePrice: moneypb.MoneyValueToString(avgCostMoney),
 			Position:     mathpb.FromMicros(data.quantityMicros),
 		}
-		// Convert prices to USD using the most recent FX rate.
+		// Convert prices to USD using the most recent FX rate, then compute
+		// market value and unrealized P&L in USD.
 		if fxStore != nil {
+			var lastPriceUSDMicros, avgPriceUSDMicros int64
 			if priceData.money != nil {
 				if usdMoney, ok := fxStore.ConvertToUSD(priceData.money.GetMarketPrice()); ok {
+					lastPriceUSDMicros = moneypb.MoneyToMicros(usdMoney)
 					holding.LastPriceUSD = moneypb.MoneyValueToString(usdMoney)
 				}
 			}
 			if usdMoney, ok := fxStore.ConvertToUSD(avgCostMoney); ok {
+				avgPriceUSDMicros = moneypb.MoneyToMicros(usdMoney)
 				holding.AveragePriceUSD = moneypb.MoneyValueToString(usdMoney)
+			}
+			// Market value USD = last price USD * position.
+			// Bond prices are percentages of par, so divide by 100 for bonds.
+			// Divide quantity first to avoid int64 overflow with large bond face values.
+			isBond := priceData.money != nil && priceData.money.GetAssetCategory() == "BOND"
+			if lastPriceUSDMicros != 0 {
+				qtyRemainder := data.quantityMicros % 1_000_000
+				mktValMicros := lastPriceUSDMicros*qtyUnits + lastPriceUSDMicros*qtyRemainder/1_000_000
+				if isBond {
+					mktValMicros /= 100
+				}
+				holding.MarketValueUSD = moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", mktValMicros))
+			}
+			// Unrealized P&L USD = (last price USD - avg price USD) * position.
+			if lastPriceUSDMicros != 0 && avgPriceUSDMicros != 0 {
+				pnlPerShareMicros := lastPriceUSDMicros - avgPriceUSDMicros
+				qtyRemainder := data.quantityMicros % 1_000_000
+				pnlMicros := pnlPerShareMicros*qtyUnits + pnlPerShareMicros*qtyRemainder/1_000_000
+				if isBond {
+					pnlMicros /= 100
+				}
+				holding.UnrealizedPnLUSD = moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", pnlMicros))
 			}
 		}
 		// Merge symbol classification from config.
