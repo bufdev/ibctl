@@ -26,8 +26,8 @@ import (
 // formatFlagName is the flag name for the output format.
 const formatFlagName = "format"
 
-// cachedFlagName is the flag name for skipping download and using cached data only.
-const cachedFlagName = "cached"
+// downloadFlagName is the flag name for downloading fresh data before displaying.
+const downloadFlagName = "download"
 
 // NewCommand returns a new holdings overview command.
 func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
@@ -50,8 +50,8 @@ type flags struct {
 	Dir string
 	// Format is the output format (table, csv, json).
 	Format string
-	// Cached skips downloading and uses only cached data.
-	Cached bool
+	// Download fetches fresh data before displaying.
+	Download bool
 }
 
 func newFlags() *flags {
@@ -62,7 +62,7 @@ func newFlags() *flags {
 func (f *flags) Bind(flagSet *pflag.FlagSet) {
 	flagSet.StringVar(&f.Dir, ibctlcmd.DirFlagName, ".", "The ibctl directory containing ibctl.yaml")
 	flagSet.StringVar(&f.Format, formatFlagName, "table", "Output format (table, csv, json)")
-	flagSet.BoolVar(&f.Cached, cachedFlagName, false, "Skip downloading and use only cached data")
+	flagSet.BoolVar(&f.Download, downloadFlagName, false, "Download fresh data before displaying")
 }
 
 func run(ctx context.Context, container appext.Container, flags *flags) error {
@@ -75,8 +75,8 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 	if err != nil {
 		return err
 	}
-	// Download fresh data unless --cached is set.
-	if !flags.Cached {
+	// Download fresh data if --download is set.
+	if flags.Download {
 		downloader, err := ibctlcmd.NewDownloader(container, flags.Dir)
 		if err != nil {
 			return err

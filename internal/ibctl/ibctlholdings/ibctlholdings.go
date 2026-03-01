@@ -261,6 +261,104 @@ func ComputeLotTotals(lots []*LotOverview) *LotTotals {
 	}
 }
 
+// CategoryOverview represents holdings aggregated by category.
+type CategoryOverview struct {
+	// Category is the asset category (e.g., "EQUITY", "FIXED_INCOME", "CASH").
+	Category string `json:"category"`
+	// MarketValueUSD is the total market value in USD.
+	MarketValueUSD string `json:"market_value_usd"`
+	// NetLiqPct is the percentage of total portfolio value (e.g., "45.23%").
+	NetLiqPct string `json:"net_liq_pct"`
+	// UnrealizedPnLUSD is the total unrealized P&L in USD.
+	UnrealizedPnLUSD string `json:"unrealized_pnl_usd"`
+	// STCGUSD is the total short-term P&L in USD.
+	STCGUSD string `json:"stcg_usd"`
+	// LTCGUSD is the total long-term P&L in USD.
+	LTCGUSD string `json:"ltcg_usd"`
+}
+
+// CategoryListHeaders returns the column headers for category list output.
+func CategoryListHeaders() []string {
+	return []string{"CATEGORY", "MKT VAL USD", "NET LIQ %", "UNRLZD P&L USD", "STCG USD", "LTCG USD"}
+}
+
+// CategoryOverviewToRow converts a CategoryOverview to a string slice for CSV output.
+func CategoryOverviewToRow(c *CategoryOverview) []string {
+	return []string{
+		c.Category,
+		c.MarketValueUSD,
+		c.NetLiqPct,
+		c.UnrealizedPnLUSD,
+		c.STCGUSD,
+		c.LTCGUSD,
+	}
+}
+
+// CategoryOverviewToTableRow converts a CategoryOverview to a string slice for table display.
+func CategoryOverviewToTableRow(c *CategoryOverview) []string {
+	return []string{
+		c.Category,
+		cliio.FormatUSD(c.MarketValueUSD),
+		c.NetLiqPct,
+		cliio.FormatUSD(c.UnrealizedPnLUSD),
+		cliio.FormatUSD(c.STCGUSD),
+		cliio.FormatUSD(c.LTCGUSD),
+	}
+}
+
+// GetCategoryList aggregates holdings by category from a HoldingsResult.
+func GetCategoryList(holdings []*HoldingOverview) []*CategoryOverview {
+	// Accumulate per-category totals in micros.
+	type categoryData struct {
+		mktValMicros int64
+		pnlMicros    int64
+		stcgMicros   int64
+		ltcgMicros   int64
+	}
+	dataMap := make(map[string]*categoryData)
+	var totalMktValMicros int64
+	for _, h := range holdings {
+		cat := h.Category
+		if cat == "" {
+			cat = "UNCATEGORIZED"
+		}
+		data, ok := dataMap[cat]
+		if !ok {
+			data = &categoryData{}
+			dataMap[cat] = data
+		}
+		mktVal := mathpb.ParseMicros(h.MarketValueUSD)
+		data.mktValMicros += mktVal
+		data.pnlMicros += mathpb.ParseMicros(h.UnrealizedPnLUSD)
+		data.stcgMicros += mathpb.ParseMicros(h.STCGUSD)
+		data.ltcgMicros += mathpb.ParseMicros(h.LTCGUSD)
+		totalMktValMicros += mktVal
+	}
+	// Build category overview entries with net liq percentage.
+	var categories []*CategoryOverview
+	for cat, data := range dataMap {
+		// Compute net liq percentage: mkt val / total mkt val * 100.
+		var pctStr string
+		if totalMktValMicros != 0 {
+			pct := float64(data.mktValMicros) / float64(totalMktValMicros) * 100
+			pctStr = fmt.Sprintf("%.2f%%", pct)
+		}
+		categories = append(categories, &CategoryOverview{
+			Category:         cat,
+			MarketValueUSD:   moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", data.mktValMicros)),
+			NetLiqPct:        pctStr,
+			UnrealizedPnLUSD: moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", data.pnlMicros)),
+			STCGUSD:          moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", data.stcgMicros)),
+			LTCGUSD:          moneypb.MoneyValueToString(moneypb.MoneyFromMicros("USD", data.ltcgMicros)),
+		})
+	}
+	// Sort by category name for deterministic output.
+	sort.Slice(categories, func(i, j int) bool {
+		return categories[i].Category < categories[j].Category
+	})
+	return categories
+}
+
 // GetLotList returns the individual tax lots for a given symbol.
 func GetLotList(
 	symbol string,

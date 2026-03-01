@@ -2,8 +2,8 @@
 //
 // All rights reserved.
 
-// Package lotlist implements the "holding lot list" command.
-package lotlist
+// Package categorylist implements the "holding category list" command.
+package categorylist
 
 import (
 	"context"
@@ -27,16 +27,16 @@ const formatFlagName = "format"
 // downloadFlagName is the flag name for downloading fresh data before displaying.
 const downloadFlagName = "download"
 
-// NewCommand returns a new lot list command.
+// NewCommand returns a new category list command.
 func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 	flags := newFlags()
 	return &appcmd.Command{
-		Use:   name + " <symbol>",
-		Short: "List individual tax lots for a symbol",
-		Args:  appcmd.ExactArgs(1),
+		Use:   name,
+		Short: "List holdings aggregated by category",
+		Args:  appcmd.NoArgs,
 		Run: builder.NewRunFunc(
 			func(ctx context.Context, container appext.Container) error {
-				return run(ctx, container, flags, container.Arg(0))
+				return run(ctx, container, flags)
 			},
 		),
 		BindFlags: flags.Bind,
@@ -63,7 +63,7 @@ func (f *flags) Bind(flagSet *pflag.FlagSet) {
 	flagSet.BoolVar(&f.Download, downloadFlagName, false, "Download fresh data before displaying")
 }
 
-func run(ctx context.Context, container appext.Container, flags *flags, symbol string) error {
+func run(ctx context.Context, container appext.Container, flags *flags) error {
 	format, err := cliio.ParseFormat(flags.Format)
 	if err != nil {
 		return appcmd.NewInvalidArgumentError(err.Error())
@@ -96,39 +96,33 @@ func run(ctx context.Context, container appext.Container, flags *flags, symbol s
 	}
 	// Load FX rates for USD conversion.
 	fxStore := ibctlfxrates.NewStore(ibctlpath.CacheFXDirPath(config.DirPath))
-	// Get the lot list for the requested symbol.
-	result, err := ibctlholdings.GetLotList(symbol, mergedData.Trades, mergedData.Positions, fxStore)
+	// Compute holdings via FIFO from all trade data.
+	result, err := ibctlholdings.GetHoldingsOverview(mergedData.Trades, mergedData.Positions, mergedData.CashPositions, config, fxStore)
 	if err != nil {
 		return err
 	}
+	// Aggregate holdings by category.
+	categories := ibctlholdings.GetCategoryList(result.Holdings)
 	// Write output in the requested format.
 	writer := os.Stdout
 	switch format {
 	case cliio.FormatTable:
-		headers := ibctlholdings.LotListHeaders()
-		rows := make([][]string, 0, len(result.Lots))
-		for _, l := range result.Lots {
-			rows = append(rows, ibctlholdings.LotOverviewToTableRow(l))
+		headers := ibctlholdings.CategoryListHeaders()
+		rows := make([][]string, 0, len(categories))
+		for _, c := range categories {
+			rows = append(rows, ibctlholdings.CategoryOverviewToTableRow(c))
 		}
-		// Build totals row for P&L USD, VALUE USD, STCG USD, LTCG USD columns.
-		totals := ibctlholdings.ComputeLotTotals(result.Lots)
-		totalsRow := make([]string, len(headers))
-		totalsRow[0] = "TOTAL"
-		totalsRow[8] = totals.PnLUSD
-		totalsRow[9] = totals.STCGUSD
-		totalsRow[10] = totals.LTCGUSD
-		totalsRow[11] = totals.ValueUSD
-		return cliio.WriteTableWithTotals(writer, headers, rows, totalsRow)
+		return cliio.WriteTable(writer, headers, rows)
 	case cliio.FormatCSV:
-		headers := ibctlholdings.LotListHeaders()
-		records := make([][]string, 0, len(result.Lots)+1)
+		headers := ibctlholdings.CategoryListHeaders()
+		records := make([][]string, 0, len(categories)+1)
 		records = append(records, headers)
-		for _, l := range result.Lots {
-			records = append(records, ibctlholdings.LotOverviewToRow(l))
+		for _, c := range categories {
+			records = append(records, ibctlholdings.CategoryOverviewToRow(c))
 		}
 		return cliio.WriteCSVRecords(writer, records)
 	case cliio.FormatJSON:
-		return cliio.WriteJSON(writer, result.Lots...)
+		return cliio.WriteJSON(writer, categories...)
 	default:
 		return appcmd.NewInvalidArgumentErrorf("unsupported format: %s", format)
 	}

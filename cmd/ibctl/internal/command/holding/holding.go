@@ -8,6 +8,7 @@ package holding
 import (
 	"buf.build/go/app/appcmd"
 	"buf.build/go/app/appext"
+	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/holding/category"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/holding/holdinglist"
 	"github.com/bufdev/ibctl/cmd/ibctl/internal/command/holding/lot"
 )
@@ -18,6 +19,7 @@ func NewCommand(name string, builder appext.SubCommandBuilder) *appcmd.Command {
 		Use:   name,
 		Short: "Display holding information",
 		SubCommands: []*appcmd.Command{
+			category.NewCommand("category", builder),
 			holdinglist.NewCommand("list", builder),
 			lot.NewCommand("lot", builder),
 		},
