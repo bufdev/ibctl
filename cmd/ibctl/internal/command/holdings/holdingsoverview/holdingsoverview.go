@@ -84,7 +84,8 @@ func run(ctx context.Context, container appext.Container, flags *flags) error {
 		}
 	}
 	// Merge seed lots + Activity Statement CSVs + Flex Query cached data across all accounts.
-	mergedData, err := ibctlmerge.Merge(config.DataDirV1Path, config.ActivityStatementsDirPath, config.SeedDirPath, config.AccountAliases)
+	// Use AccountsDirPath for per-account cached data.
+	mergedData, err := ibctlmerge.Merge(config.AccountsDirPath, config.ActivityStatementsDirPath, config.SeedDirPath, config.AccountAliases)
 	if err != nil {
 		return err
 	}

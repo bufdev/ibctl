@@ -104,6 +104,10 @@ type ExternalSymbolConfigV1 struct {
 type Config struct {
 	// DataDirV1Path is the resolved versioned data directory path (data_dir/v1).
 	DataDirV1Path string
+	// AccountsDirPath is the directory for per-account cached data (data_dir/v1/accounts).
+	AccountsDirPath string
+	// FXDirPath is the directory for FX rate data per currency pair (data_dir/v1/fx).
+	FXDirPath string
 	// IBKRFlexQueryID is the Flex Query ID.
 	//
 	// To create a Flex Query, log in to IBKR Client Portal, navigate to
@@ -204,6 +208,8 @@ func NewConfigV1(externalConfig ExternalConfigV1) (*Config, error) {
 	}
 	return &Config{
 		DataDirV1Path:             dataDirV1Path,
+		AccountsDirPath:           filepath.Join(dataDirV1Path, "accounts"),
+		FXDirPath:                 filepath.Join(dataDirV1Path, "fx"),
 		IBKRFlexQueryID:           externalConfig.FlexQueryID,
 		ActivityStatementsDirPath: activityStatementsDirPath,
 		SeedDirPath:               seedDirPath,

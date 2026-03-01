@@ -69,16 +69,9 @@ type downloader struct {
 }
 
 func (d *downloader) Download(ctx context.Context) error {
-	// Create the data directory if needed.
-	if err := os.MkdirAll(d.dataDirV1Path, 0o755); err != nil {
-		return fmt.Errorf("creating data directory: %w", err)
-	}
-	// Warn if old flat data files exist (pre-multi-account format).
-	oldTradesPath := filepath.Join(d.dataDirV1Path, "trades.json")
-	if fileExists(oldTradesPath) {
-		d.logger.Warn("found old flat data files, these will be ignored in favor of per-account data",
-			"path", oldTradesPath,
-		)
+	// Create the accounts directory for per-account cached data.
+	if err := os.MkdirAll(d.config.AccountsDirPath, 0o755); err != nil {
+		return fmt.Errorf("creating accounts directory: %w", err)
 	}
 	d.logger.Info("downloading flex query data")
 	// Fetch data using the query's configured period (single API call).
@@ -100,8 +93,8 @@ func (d *downloader) Download(ctx context.Context) error {
 			)
 			continue
 		}
-		// Create the per-account directory.
-		accountDir := filepath.Join(d.dataDirV1Path, alias)
+		// Create the per-account directory under accounts/.
+		accountDir := filepath.Join(d.config.AccountsDirPath, alias)
 		if err := os.MkdirAll(accountDir, 0o755); err != nil {
 			return fmt.Errorf("creating account directory for %s: %w", alias, err)
 		}
@@ -123,7 +116,7 @@ func (d *downloader) Download(ctx context.Context) error {
 	if err := d.fetchMissingExchangeRates(ctx, exchangeRates, allTrades); err != nil {
 		d.logger.Warn("failed to fetch missing exchange rates", "error", err)
 	}
-	exchangeRatesPath := filepath.Join(d.dataDirV1Path, "exchange_rates.json")
+	exchangeRatesPath := filepath.Join(d.config.FXDirPath, "exchange_rates.json")
 	if err := protoio.WriteMessagesJSON(exchangeRatesPath, exchangeRates); err != nil {
 		return fmt.Errorf("writing exchange rates: %w", err)
 	}
@@ -231,7 +224,7 @@ func (d *downloader) mergeTradesWithCache(newTrades []*datav1.Trade, accountDir 
 // rates into them, deduplicating by date + base currency + quote currency.
 func (d *downloader) mergeExchangeRatesWithCache(newRates []*datav1.ExchangeRate) []*datav1.ExchangeRate {
 	// Exchange rates are global (not per-account).
-	exchangeRatesPath := filepath.Join(d.dataDirV1Path, "exchange_rates.json")
+	exchangeRatesPath := filepath.Join(d.config.FXDirPath, "exchange_rates.json")
 	cachedRates, err := protoio.ReadMessagesJSON(exchangeRatesPath, func() *datav1.ExchangeRate { return &datav1.ExchangeRate{} })
 	if err != nil {
 		// No cache or read error — start fresh with just the new rates.
@@ -810,10 +803,4 @@ func parseCorporateActionType(s string) datav1.CorporateActionType {
 // parseIBKRDate parses an IBKR date string in YYYYMMDD format.
 func parseIBKRDate(s string) (time.Time, error) {
 	return time.Parse("20060102", s)
-}
-
-// fileExists checks if a file exists at the given path.
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
